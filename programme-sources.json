@@ -1,0 +1,17 @@
+{
+  "1": {
+    "label": "1. letnik",
+    "friUrl": "https://urnik.fri.uni-lj.si/timetable/fri-2026_2027-zimski/allocations?group=64611",
+    "fmfUrl": "https://urnik.fmf.uni-lj.si/layer_one/42/"
+  },
+  "2": {
+    "label": "2. letnik",
+    "friUrl": "https://urnik.fri.uni-lj.si/timetable/fri-2026_2027-zimski/allocations?group=64538",
+    "fmfUrl": "https://urnik.fmf.uni-lj.si/layer_one/49/"
+  },
+  "3": {
+    "label": "3. letnik",
+    "friUrl": "https://urnik.fri.uni-lj.si/timetable/fri-2026_2027-zimski/allocations?group=64558",
+    "fmfUrl": "https://urnik.fmf.uni-lj.si/layer_one/55/"
+  }
+}

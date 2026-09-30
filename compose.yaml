@@ -1,0 +1,33 @@
+services:
+  timetable:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HOST_PORT:-3000}:3000"
+    mem_limit: 256m
+    cpus: "0.50"
+    pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PORT: 3000
+      DATA_DIR: /data
+      TZ: Europe/Ljubljana
+      REFRESH_MINUTES: 15
+      MIN_REQUEST_INTERVAL_SECONDS: 3
+      PRELOAD_WEEKS: 5
+      PRELOAD_REFRESH_MINUTES: 360
+      NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.majmohar.eu}
+      NTFY_TOPIC: ${NTFY_TOPIC:-isrm-alerts}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      TRUST_PROXY: "true"
+    volumes:
+      - timetable-cache:/data
+
+volumes:
+  timetable-cache:
