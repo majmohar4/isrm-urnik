@@ -603,7 +603,8 @@ const server = createServer(async (request, response) => {
   const requestedPath = url.pathname === '/' ? '/index.html' : url.pathname;
   const candidate = normalize(join(DIST, requestedPath));
   const file = (candidate === DIST || candidate.startsWith(`${DIST}/`)) && existsSync(candidate) ? candidate : join(DIST, 'index.html');
-  response.writeHead(200, { 'content-type': mime[extname(file)] || 'application/octet-stream', 'cache-control': file.endsWith('index.html') || file.endsWith('sw.js') ? 'no-cache' : 'public, max-age=31536000, immutable' });
+  const mustRevalidate = file.endsWith('index.html') || file.endsWith('sw.js') || file.endsWith('manifest.webmanifest');
+  response.writeHead(200, { 'content-type': mime[extname(file)] || 'application/octet-stream', 'cache-control': mustRevalidate ? 'no-cache' : 'public, max-age=31536000, immutable' });
   createReadStream(file).pipe(response);
 });
 

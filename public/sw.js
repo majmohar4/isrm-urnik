@@ -1,4 +1,4 @@
-const CACHE = 'isrm-urnik-v15';
+const CACHE = 'isrm-urnik-v16';
 const APP = ['/', '/manifest.webmanifest', '/icons/icon.svg'];
 self.addEventListener('install', (event) => event.waitUntil(caches.open(CACHE)
   .then((cache) => cache.addAll(APP))
