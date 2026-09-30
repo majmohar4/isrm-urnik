@@ -47,6 +47,7 @@ const PROGRAMMES = loadProgrammes();
 const NTFY_SERVER = (process.env.NTFY_SERVER || 'https://ntfy.majmohar.eu').replace(/\/+$/, '');
 const NTFY_TOPIC = process.env.NTFY_TOPIC || 'isrm-alerts';
 const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
+const APP_VERSION = process.env.APP_VERSION || 'unversioned';
 const DIST = join(process.cwd(), 'dist');
 const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
 const MAX_UPSTREAM_BODY_BYTES = 4 * 1024 * 1024;
@@ -153,18 +154,36 @@ function programmeCache(programme) {
   return cache.programmes[id];
 }
 
+async function sendNtfyNotification({ title, tags, body, timeoutMs = 10_000 }) {
+  if (!NTFY_TOPIC || !NTFY_SERVER) return;
+  try {
+    await fetch(`${NTFY_SERVER}/${encodeURIComponent(NTFY_TOPIC)}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'text/plain; charset=utf-8',
+        title,
+        tags,
+        ...(NTFY_TOKEN ? { authorization: `Bearer ${NTFY_TOKEN}` } : {}),
+      },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    console.warn('Could not send ntfy alert:', error.message);
+  }
+}
+
 async function notifySourceChanges(previous, current) {
-  if (!NTFY_TOPIC) return;
   const transitions = Object.keys(current).filter((source) => previous?.[source]?.ok !== undefined && previous[source].ok !== current[source].ok);
   if (!transitions.length) return;
   const summary = transitions.map((source) => current[source].ok
     ? `${source} timetable source recovered.`
     : `${source} timetable source failed: ${current[source].message || 'unknown error'}`).join(' ');
-  try {
-    await fetch(`${NTFY_SERVER}/${encodeURIComponent(NTFY_TOPIC)}`, { method: 'POST', headers: { 'content-type': 'text/plain; charset=utf-8', title: 'IŠRM urnik', tags: current[transitions[0]].ok ? 'white_check_mark' : 'warning', ...(NTFY_TOKEN ? { authorization: `Bearer ${NTFY_TOKEN}` } : {}) }, body: `IŠRM: ${summary}`, signal: AbortSignal.timeout(10_000) });
-  } catch (error) {
-    console.warn('Could not send ntfy alert:', error.message);
-  }
+  await sendNtfyNotification({
+    title: 'IŠRM urnik',
+    tags: current[transitions[0]].ok ? 'white_check_mark' : 'warning',
+    body: `IŠRM: ${summary}`,
+  });
 }
 
 function monday(dateLike = new Date()) {
@@ -487,7 +506,7 @@ function calendarText(programme, weekKey, events) {
   const createdAt = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
   const calendarEvents = events.map((event) => [
     'BEGIN:VEVENT',
-    `UID:${icalEscape(event.id)}@skupni-urnik`,
+    `UID:${icalEscape(`${event.id}-${event.date}`)}@skupni-urnik`,
     `DTSTAMP:${createdAt}`,
     `DTSTART;TZID=Europe/Ljubljana:${icalDateTime(event.date, event.start)}`,
     `DTEND;TZID=Europe/Ljubljana:${icalDateTime(event.date, event.end)}`,
@@ -500,7 +519,7 @@ function calendarText(programme, weekKey, events) {
 }
 
 function sendCalendar(response, programme, weekKey, events) {
-  const filename = `isrm-${programme}-letnik-${weekKey}.ics`;
+  const filename = weekKey === 'subscription' ? `isrm-${programme}-letnik.ics` : `isrm-${programme}-letnik-${weekKey}.ics`;
   response.writeHead(200, {
     'content-type': 'text/calendar; charset=utf-8',
     'content-disposition': `attachment; filename="${filename}"`,
@@ -560,6 +579,20 @@ const server = createServer(async (request, response) => {
       return sendJson(response, { error: 'Koledarja trenutno ni mogoče pripraviti.', weekStart: weekKey }, 503);
     }
   }
+  if (url.pathname === '/api/calendar/subscription') {
+    const programme = programmeId(url.searchParams.get('programme'));
+    const stored = programmeCache(programme);
+    const weekKey = isoDate(monday());
+    const events = Object.values(stored.weeks).flatMap((week) => week.events || []).sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`));
+    queueRecheck(programme, weekKey);
+    if (events.length) return sendCalendar(response, programme, 'subscription', events);
+    try {
+      const week = await refreshWeek(programme, weekKey);
+      return sendCalendar(response, programme, 'subscription', week.events);
+    } catch {
+      return sendJson(response, { error: 'Koledarja trenutno ni mogoče pripraviti.' }, 503);
+    }
+  }
   if (url.pathname === '/live') return sendJson(response, { ok: true });
   if (url.pathname === '/health') {
     const sources = Object.fromEntries(Object.entries(cache.programmes || {}).map(([programme, stored]) => [programme, stored.sources]));
@@ -574,7 +607,33 @@ const server = createServer(async (request, response) => {
   createReadStream(file).pipe(response);
 });
 
-server.listen(PORT, () => console.log(`Skupni urnik is listening on :${PORT}`));
+let isShuttingDown = false;
+
+async function shutDown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`Received ${signal}; shutting down.`);
+  await sendNtfyNotification({
+    title: 'IŠRM urnik se ustavlja',
+    tags: 'warning',
+    body: `IŠRM timetable service is shutting down (${APP_VERSION}).`,
+    timeoutMs: 4_000,
+  });
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 10_000).unref();
+}
+
+process.on('SIGTERM', () => { void shutDown('SIGTERM'); });
+process.on('SIGINT', () => { void shutDown('SIGINT'); });
+
+server.listen(PORT, () => {
+  console.log(`Skupni urnik is listening on :${PORT}`);
+  void sendNtfyNotification({
+    title: 'IŠRM urnik je pripravljen',
+    tags: 'white_check_mark',
+    body: `IŠRM timetable service is online (${APP_VERSION}).`,
+  });
+});
 server.requestTimeout = 15_000;
 server.headersTimeout = 10_000;
 server.keepAliveTimeout = 5_000;

@@ -2,6 +2,7 @@ services:
   timetable:
     build: .
     restart: unless-stopped
+    stop_grace_period: 15s
     ports:
       - "127.0.0.1:${HOST_PORT:-3000}:3000"
     mem_limit: 256m
@@ -25,6 +26,7 @@ services:
       NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.majmohar.eu}
       NTFY_TOPIC: ${NTFY_TOPIC:-isrm-alerts}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
+      APP_VERSION: ${APP_VERSION:-unversioned}
       TRUST_PROXY: "true"
     volumes:
       - timetable-cache:/data
