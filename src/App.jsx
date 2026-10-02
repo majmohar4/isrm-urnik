@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { APP_VERSION } from './version.js';
 
 const DAY_NAMES = ['Pon', 'Tor', 'Sre', 'Čet', 'Pet'];
 const FULL_DAY_NAMES = ['ponedeljek', 'torek', 'sreda', 'četrtek', 'petek'];
@@ -175,6 +176,7 @@ function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
   const [installDismissed, setInstallDismissed] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState(() => window.sessionStorage.getItem('isrm-pwa-updated') === '1');
   const [pullDistance, setPullDistance] = useState(0);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [navigationDirection, setNavigationDirection] = useState('');
@@ -301,6 +303,10 @@ function App() {
   }, []);
   useEffect(() => { window.localStorage.setItem('timetable-view', viewMode); }, [viewMode]);
   useEffect(() => {
+    console.info(`[IŠRM] App version ${APP_VERSION}`);
+    if (updateNotice) window.sessionStorage.removeItem('isrm-pwa-updated');
+  }, [updateNotice]);
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem('timetable-theme', theme);
   }, [theme]);
@@ -355,6 +361,7 @@ function App() {
 
   const pullOffset = Math.min(72, pullDistance) - 82;
   return <main className="app-shell">
+    {updateNotice && <aside className="update-sheet" role="status" aria-live="polite"><div><b>The app has been updated to {APP_VERSION}.</b></div><button onClick={() => setUpdateNotice(false)} aria-label="Close update notice"><Icon name="close" size={17} /></button></aside>}
     {(pullDistance > 0 || pullRefreshing) && <div className={`pull-refresh ${pullRefreshing ? 'is-refreshing' : ''} ${pullDistance >= 62 ? 'is-ready' : ''}`} style={{ transform: `translate(-50%, ${pullOffset}px)` }} role="status" aria-live="polite"><span className="pull-refresh__icon"><Icon name="refresh" size={16} /></span><span>{pullRefreshing ? 'Osvežujem urnik' : pullDistance >= 62 ? 'Spusti za osvežitev' : 'Povleci za osvežitev'}</span></div>}
     <header className="topbar">
       <a className="brand" href="#top" aria-label="IŠRM, začetek"><span className="brand__mark"><Icon name="grid" size={19} /></span><span>IŠRM<br /><small>{programmeYear}. letnik · FRI program</small></span></a>

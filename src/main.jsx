@@ -9,6 +9,7 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (reloadingForUpdate) return;
     reloadingForUpdate = true;
+    window.sessionStorage.setItem('isrm-pwa-updated', '1');
     window.location.reload();
   });
 
