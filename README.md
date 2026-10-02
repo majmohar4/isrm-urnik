@@ -28,7 +28,7 @@ docker compose up -d --build
 
 The `timetable-cache` volume retains the latest successful schedule when a source is temporarily unavailable. Change source addresses through `programme-sources.json`; change ntfy notification configuration through `.env`.
 
-The service preloads five upcoming weeks (about one month) for every programme. It checks whether cached source data has become stale every 15 minutes and refreshes stale preloaded weeks every six hours, so normal navigation is served from the local cache without overloading university sources.
+The service preloads eight upcoming weeks (about two months) for every programme and retains up to twenty cached weeks per programme. It checks whether cached source data has become stale every 15 minutes and refreshes stale preloaded weeks every six hours, so normal navigation is served from the local cache without overloading university sources.
 
 The application port is deliberately bound to `127.0.0.1:${HOST_PORT}` (default `3000`). Change `HOST_PORT` in `.env` to any unused local port, then route it to `isrm.majmohar.eu` through your separate Cloudflared or reverse-proxy container. It is not directly exposed by Docker.
 

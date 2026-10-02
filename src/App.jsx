@@ -3,6 +3,10 @@ import { APP_VERSION } from './version.js';
 
 const DAY_NAMES = ['Pon', 'Tor', 'Sre', 'Čet', 'Pet'];
 const FULL_DAY_NAMES = ['ponedeljek', 'torek', 'sreda', 'četrtek', 'petek'];
+const LOCAL_WEEK_CACHE_KEY = 'isrm-week-cache-v1';
+const LOCAL_MONTH_CACHE_KEY = 'isrm-month-cache-v1';
+const LOCAL_CACHE_TTL_MS = 10 * 60_000;
+const LOCAL_CACHE_RETENTION_MS = 60 * 24 * 60 * 60_000;
 
 function monday(value = new Date()) {
   const date = new Date(value);
@@ -15,6 +19,29 @@ function monday(value = new Date()) {
 function dateKey(date) {
   const offset = date.getTimezoneOffset();
   return new Date(date.getTime() - offset * 60_000).toISOString().slice(0, 10);
+}
+
+function readLocalCache(storageKey) {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
+    if (!parsed || typeof parsed !== 'object') return {};
+    const oldest = Date.now() - LOCAL_CACHE_RETENTION_MS;
+    return Object.fromEntries(Object.entries(parsed).filter(([, entry]) => entry?.storedAt >= oldest && entry.payload));
+  } catch { return {}; }
+}
+
+function writeLocalCache(storageKey, cache, limit) {
+  try {
+    const retained = Object.entries(cache)
+      .sort(([, left], [, right]) => right.storedAt - left.storedAt)
+      .slice(0, limit);
+    window.localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(retained)));
+    return Object.fromEntries(retained);
+  } catch { return cache; }
+}
+
+function cacheKeyFor(period, programme, studentNumber) {
+  return `${programme}:${studentNumber || 'shared'}:${period}`;
 }
 
 function plusDays(date, days) {
@@ -51,6 +78,8 @@ function isNewerVersion(remote, installed) {
 }
 
 const isAndroidDevice = () => /Android/i.test(navigator.userAgent);
+const isIosDevice = () => /iPad|iPhone|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandaloneApp = () => window.matchMedia('(display-mode: standalone)').matches || Boolean(navigator.standalone);
 
 function weekFromLocation() {
   const value = new URLSearchParams(window.location.search).get('week');
@@ -228,6 +257,7 @@ function App() {
   const [now, setNow] = useState(new Date());
   const [installPrompt, setInstallPrompt] = useState(null);
   const [androidRelease, setAndroidRelease] = useState(null);
+  const [installGuideOpen, setInstallGuideOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [viewMode, setViewMode] = useState(() => window.localStorage.getItem('timetable-view') || 'agenda');
   const [timelineDayIndex, setTimelineDayIndex] = useState(() => Math.max(0, new Date().getDay() - 1));
@@ -251,25 +281,60 @@ function App() {
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [navigationDirection, setNavigationDirection] = useState('');
   const [navigationKey, setNavigationKey] = useState(0);
+  const [swipeOffset, setSwipeOffset] = useState(0);
   const refreshRef = useRef(null);
   const refreshingRef = useRef(false);
   const weekRef = useRef(weekStart);
+  const timetableCacheRef = useRef(readLocalCache(LOCAL_WEEK_CACHE_KEY));
+  const monthCacheRef = useRef(readLocalCache(LOCAL_MONTH_CACHE_KEY));
+  const timetableRequestRef = useRef(null);
+  const pendingLoadRef = useRef(null);
 
   const weekKey = dateKey(weekStart);
+  const monthKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}`;
   const weekDays = useMemo(() => Array.from({ length: 5 }, (_, index) => plusDays(weekStart, index)), [weekStart]);
   const todayKey = dateKey(new Date());
 
-  const load = async (refresh = false) => {
-    setLoading(true);
-    try {
-      const response = await fetch(`/api/timetable?week=${weekKey}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}${refresh ? '&refresh=1' : ''}`);
-      const payload = await response.json();
-      if (!response.ok && !payload.events?.length) throw new Error(payload.error || 'Povezava z urnikom ni uspela.');
-      setData(payload);
-      setError(response.ok ? '' : payload.error || 'Prikazani so zadnji shranjeni podatki.');
-    } catch (requestError) {
-      setError(requestError.message || 'Povezava z urnikom ni uspela.');
-    } finally { setLoading(false); }
+  const load = (refresh = false) => {
+    const localKey = cacheKeyFor(weekKey, programmeYear, studentNumber);
+    const cached = timetableCacheRef.current[localKey];
+    const cacheIsFresh = cached && Date.now() - cached.storedAt < LOCAL_CACHE_TTL_MS;
+    if (pendingLoadRef.current) {
+      window.clearTimeout(pendingLoadRef.current.timer);
+      pendingLoadRef.current.resolve();
+      pendingLoadRef.current = null;
+    }
+    timetableRequestRef.current?.abort();
+    if (cached) {
+      setData(cached.payload);
+      setError('');
+      setLoading(false);
+      if (!refresh && cacheIsFresh) return Promise.resolve();
+    } else setLoading(true);
+    const controller = new AbortController();
+    timetableRequestRef.current = controller;
+    const request = async () => {
+      try {
+        const response = await fetch(`/api/timetable?week=${weekKey}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}${refresh ? '&refresh=1' : ''}`, { signal: controller.signal });
+        const payload = await response.json();
+        if (!response.ok && !payload.events?.length) throw new Error(payload.error || 'Povezava z urnikom ni uspela.');
+        if (timetableRequestRef.current !== controller) return;
+        setData(payload);
+        timetableCacheRef.current[localKey] = { storedAt: Date.now(), payload };
+        timetableCacheRef.current = writeLocalCache(LOCAL_WEEK_CACHE_KEY, timetableCacheRef.current, 24);
+        setError(response.ok ? '' : payload.error || 'Prikazani so zadnji shranjeni podatki.');
+      } catch (requestError) {
+        if (requestError.name !== 'AbortError' && timetableRequestRef.current === controller) setError(requestError.message || 'Povezava z urnikom ni uspela.');
+      } finally {
+        if (timetableRequestRef.current === controller) setLoading(false);
+      }
+    };
+    return new Promise((resolve) => {
+      const delay = refresh ? 0 : 140;
+      const run = () => { pendingLoadRef.current = null; request().finally(resolve); };
+      if (delay) pendingLoadRef.current = { timer: window.setTimeout(run, delay), resolve };
+      else run();
+    });
   };
   refreshRef.current = () => load(true);
 
@@ -278,13 +343,21 @@ function App() {
   useEffect(() => {
     if (viewMode !== 'month') return;
     let cancelled = false;
-    const monthKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}`;
+    const localKey = cacheKeyFor(monthKey, programmeYear, studentNumber);
+    const cached = monthCacheRef.current[localKey];
+    if (cached) setMonthEvents(cached.payload.events || []);
+    if (cached && Date.now() - cached.storedAt < LOCAL_CACHE_TTL_MS) return undefined;
     fetch(`/api/month?month=${monthKey}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`)
       .then(async (response) => ({ response, payload: await response.json() }))
-      .then(({ response, payload }) => { if (!cancelled) setMonthEvents(response.ok ? payload.events || [] : []); })
-      .catch(() => { if (!cancelled) setMonthEvents([]); });
+      .then(({ response, payload }) => {
+        if (!response.ok || cancelled) return;
+        setMonthEvents(payload.events || []);
+        monthCacheRef.current[localKey] = { storedAt: Date.now(), payload };
+        monthCacheRef.current = writeLocalCache(LOCAL_MONTH_CACHE_KEY, monthCacheRef.current, 8);
+      })
+      .catch(() => { if (!cancelled && !cached) setMonthEvents([]); });
     return () => { cancelled = true; };
-  }, [viewMode, weekKey, programmeYear, studentNumber]);
+  }, [viewMode, monthKey, programmeYear, studentNumber]);
   useEffect(() => { weekRef.current = weekStart; }, [weekStart]);
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -313,7 +386,7 @@ function App() {
     let startX = null;
     let distance = 0;
     let active = false;
-    const reset = () => { startY = null; startX = null; distance = 0; active = false; setPullDistance(0); };
+    const reset = () => { startY = null; startX = null; distance = 0; active = false; setPullDistance(0); setSwipeOffset(0); };
     const onStart = (event) => {
       if (refreshingRef.current || window.scrollY > 0 || event.touches.length !== 1 || !event.target.closest('.schedule')) return;
       startY = event.touches[0].clientY;
@@ -323,6 +396,12 @@ function App() {
     const onMove = (event) => {
       if (!active || startY === null || window.scrollY > 0) return;
       const delta = event.touches[0].clientY - startY;
+      const horizontal = startX === null ? 0 : event.touches[0].clientX - startX;
+      if (Math.abs(horizontal) > 10 && Math.abs(horizontal) > Math.abs(delta)) {
+        setSwipeOffset(Math.max(-46, Math.min(46, horizontal * .2)));
+        event.preventDefault();
+        return;
+      }
       if (delta <= 0) { setPullDistance(0); return; }
       distance = Math.min(108, delta * 0.46);
       setPullDistance(distance);
@@ -408,7 +487,7 @@ function App() {
   };
   const previousWeek = () => navigateWeek(plusDays(weekStart, -7), 'back');
   const nextWeek = () => navigateWeek(plusDays(weekStart, 7), 'forward');
-  const install = async () => { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice; setInstallPrompt(null); };
+  const install = async () => { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice; setInstallPrompt(null); setInstallGuideOpen(false); };
   const copySubscription = async () => {
     try { await navigator.clipboard.writeText(subscriptionUrl); setCopyStatus('Povezava kopirana'); }
     catch { setCopyStatus('Kopiranje ni uspelo'); }
@@ -462,7 +541,14 @@ function App() {
         setAdminError('');
         return;
       }
-      setData((current) => current ? { ...current, events: [...current.events.filter((item) => item.id !== event.id), event].sort((a, b) => `${a.date}T${a.start}`.localeCompare(`${b.date}T${b.start}`)) } : current);
+      setData((current) => {
+        if (!current) return current;
+        const payload = { ...current, events: [...current.events.filter((item) => item.id !== event.id), event].sort((a, b) => `${a.date}T${a.start}`.localeCompare(`${b.date}T${b.start}`)) };
+        const localKey = cacheKeyFor(weekKey, programmeYear, studentNumber);
+        timetableCacheRef.current[localKey] = { storedAt: Date.now(), payload };
+        timetableCacheRef.current = writeLocalCache(LOCAL_WEEK_CACHE_KEY, timetableCacheRef.current, 24);
+        return payload;
+      });
       if (event.date.slice(0, 7) === weekKey.slice(0, 7)) setMonthEvents((current) => [...current.filter((item) => item.id !== event.id), event].sort((a, b) => `${a.date}T${a.start}`.localeCompare(`${b.date}T${b.start}`)));
       setEventComposerOpen(false);
       setAdminError('');
@@ -508,7 +594,7 @@ function App() {
 
     {(error || sourceIssues.length > 0) && <div className="notice" role="status">{error || `Pozor: ${sourceIssues.map(([source, status]) => `${source} (${status.message || 'vir ni dosegljiv'})`).join('; ')}. Prikazani so zadnji uspešno shranjeni podatki.`}</div>}
 
-    <section key={`${weekKey}-${navigationKey}`} className={`schedule week-content week-content--${navigationDirection}`} aria-label="Tedenski urnik">
+    <section key={`${weekKey}-${navigationKey}`} className={`schedule week-content week-content--${navigationDirection} ${swipeOffset ? 'is-swiping' : ''}`} style={{ '--week-swipe': `${swipeOffset}px` }} aria-label="Tedenski urnik">
       <div className="schedule__heading"><h2>Urnik</h2><div><span>{events.length} {events.length === 1 ? 'obveznost' : 'obveznosti'}</span><div className="view-modes" role="group" aria-label="Prikaz urnika"><button className={viewMode === 'agenda' ? 'is-selected' : ''} onClick={() => setViewMode('agenda')} aria-pressed={viewMode === 'agenda'}>Seznam</button><button className={viewMode === 'timeline' ? 'is-selected' : ''} onClick={() => setViewMode('timeline')} aria-pressed={viewMode === 'timeline'}>Časovni</button><button className={viewMode === 'week' ? 'is-selected' : ''} onClick={() => setViewMode('week')} aria-pressed={viewMode === 'week'}>Teden</button><button className={viewMode === 'month' ? 'is-selected' : ''} onClick={() => setViewMode('month')} aria-pressed={viewMode === 'month'}>Mesec</button></div></div></div>
       {viewMode === 'agenda' && <div className="weekday-tabs">{weekDays.map((day, index) => <a key={dateKey(day)} href={`#day-${index}`} className={dateKey(day) === todayKey ? 'is-today' : ''}><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></a>)}</div>}
       {viewMode === 'timeline' && <div className="timeline-day-switch" role="group" aria-label="Dan v časovnem pogledu">{weekDays.map((day, index) => <button key={dateKey(day)} className={timelineDayIndex === index ? 'is-selected' : ''} onClick={() => setTimelineDayIndex(index)} aria-pressed={timelineDayIndex === index}><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></button>)}</div>}
@@ -529,9 +615,11 @@ function App() {
     {adminUnlocked && <button className="event-fab" onClick={openEventComposer} aria-label="Dodaj dogodek"><Icon name="plus" size={21} /><span>Dodaj</span></button>}
     {eventComposerOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setEventComposerOpen(false)}><section className="lesson-dialog event-composer" role="dialog" aria-modal="true" aria-labelledby="event-composer-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>{programmeYear}. letnik</i></span><h2 id="event-composer-title">Dodaj dogodek</h2></div><button className="lesson-close" onClick={() => setEventComposerOpen(false)} aria-label="Zapri dodajanje dogodka"><Icon name="close" size={18} /></button></header><p>Dogodek bo viden celotnemu {programmeYear}. letniku v prikazanem tednu.</p><form onSubmit={addCustomEvent}><label><b>Naslov</b><input value={customEvent.title} onChange={(event) => setCustomEvent((value) => ({ ...value, title: event.target.value }))} placeholder="Npr. Izpit" autoFocus required /></label><label><b>Datum</b><input type="date" value={customEvent.date} onChange={(event) => setCustomEvent((value) => ({ ...value, date: event.target.value }))} required /></label><div className="event-composer__times"><label><b>Začetek</b><input type="time" value={customEvent.start} onChange={(event) => setCustomEvent((value) => ({ ...value, start: event.target.value }))} required /></label><label><b>Konec</b><input type="time" value={customEvent.end} onChange={(event) => setCustomEvent((value) => ({ ...value, end: event.target.value }))} required /></label></div><label><b>Lokacija <small>neobvezno</small></b><input value={customEvent.room} onChange={(event) => setCustomEvent((value) => ({ ...value, room: event.target.value }))} placeholder="Npr. P.01" /></label>{adminError && <p className="settings-error" role="alert">{adminError}</p>}<div className="event-composer__actions"><button type="button" onClick={() => setEventComposerOpen(false)}>Prekliči</button><button type="submit">Dodaj dogodek</button></div></form></section></div>}
 
-    <footer className="footer"><span>IŠRM · FRI × FMF</span><a href="/privacy">Zasebnost</a><div className="source-statuses">{['FRI', 'FMF'].map((source) => <span key={source} className={data?.sources?.[source]?.ok ? 'ok' : 'warning'}><b />{source}</span>)}</div></footer>
+    <footer className="footer"><span>IŠRM · FRI × FMF</span><div className="footer-links"><button className="footer-install" onClick={() => setInstallGuideOpen(true)}><Icon name="download" size={14} />Namesti aplikacijo</button><a href="/privacy">Zasebnost</a></div><div className="source-statuses">{['FRI', 'FMF'].map((source) => <span key={source} className={data?.sources?.[source]?.ok ? 'ok' : 'warning'}><b />{source}</span>)}</div></footer>
     {isAndroidDevice() && androidRelease?.androidApkUrl && !installDismissed && <aside className="install-banner android-install-banner" aria-label="Prenos Android aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM za Android</strong><p>Native aplikacija {androidRelease.androidVersion} z delovanjem brez povezave in pripomočki.</p></div><a className="install-banner__action" href={androidRelease.androidApkUrl}><Icon name="download" size={16} />Prenesi</a><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
-    {!androidRelease?.androidApkUrl && installPrompt && !installDismissed && <aside className="install-banner" aria-label="Namestitev aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>Dodaj urnik na začetni zaslon za hitrejši dostop.</p></div><button className="install-banner__action" onClick={install}><Icon name="download" size={16} />Namesti</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
+    {isIosDevice() && !isStandaloneApp() && !installDismissed && <aside className="install-banner" aria-label="Namestitev IŠRM na iPhone"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>V Safariju izberi Deli in nato Add to Home Screen.</p></div><button className="install-banner__action" onClick={() => setInstallGuideOpen(true)}><Icon name="download" size={16} />Navodila</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
+    {!isIosDevice() && !androidRelease?.androidApkUrl && installPrompt && !installDismissed && <aside className="install-banner" aria-label="Namestitev aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>Dodaj urnik na začetni zaslon za hitrejši dostop.</p></div><button className="install-banner__action" onClick={install}><Icon name="download" size={16} />Namesti</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
+    {installGuideOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setInstallGuideOpen(false)}><section className="lesson-dialog install-guide" role="dialog" aria-modal="true" aria-labelledby="install-guide-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>Namestitev</i></span><h2 id="install-guide-title">Namesti aplikacijo</h2></div><button className="lesson-close" onClick={() => setInstallGuideOpen(false)} aria-label="Zapri navodila za namestitev"><Icon name="close" size={18} /></button></header>{isAndroidDevice() && androidRelease?.androidApkUrl ? <><p>Namesti native Android aplikacijo z delovanjem brez povezave in pripomočki.</p><a className="android-release-action" href={androidRelease.androidApkUrl}><Icon name="download" size={18} />Prenesi IŠRM {androidRelease.androidVersion}</a></> : isIosDevice() ? <><p>Za namestitev PWA odpri to stran v Safariju.</p><ol><li>Tapni gumb Deli v spodnji vrstici Safarija.</li><li>Izberi Add to Home Screen.</li><li>Potrdi Dodaj.</li></ol></> : installPrompt ? <><p>Dodaj IŠRM na začetni zaslon za hitrejši dostop in delovanje brez povezave.</p><button className="android-release-action" onClick={install}><Icon name="download" size={18} />Namesti PWA</button></> : <p>V meniju brskalnika izberi Install app oziroma Namesti aplikacijo.</p>}</section></div>}
   </main>;
 }
 

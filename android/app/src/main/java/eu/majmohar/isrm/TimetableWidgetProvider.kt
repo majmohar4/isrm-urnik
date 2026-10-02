@@ -8,7 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
 import androidx.work.CoroutineWorker
+import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -24,14 +26,17 @@ import java.util.concurrent.TimeUnit
 
 object WidgetRefresh {
     private const val PERIODIC = "isrm-widget-periodic"
-    fun schedule(context: Context) { WorkManager.getInstance(context).enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.UPDATE, PeriodicWorkRequestBuilder<WidgetWorker>(15, TimeUnit.MINUTES).build()) }
+    private val networkRequired = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+    fun schedule(context: Context) { WorkManager.getInstance(context).enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.UPDATE, PeriodicWorkRequestBuilder<WidgetWorker>(6, TimeUnit.HOURS).setConstraints(networkRequired).build()) }
     fun now(context: Context) { WorkManager.getInstance(context).enqueue(OneTimeWorkRequestBuilder<WidgetWorker>().build()) }
+    fun cancel(context: Context) { WorkManager.getInstance(context).cancelUniqueWork(PERIODIC) }
 }
 
 class TimetableWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) { WidgetRefresh.schedule(context); WidgetRefresh.now(context) }
     override fun onReceive(context: Context, intent: Intent) { super.onReceive(context, intent); if (intent.action == "eu.majmohar.isrm.REFRESH_WIDGET") WidgetRefresh.now(context) }
-    override fun onDeleted(context: Context, ids: IntArray) { ids.forEach { WidgetPrefs.remove(context, it) } }
+    override fun onDeleted(context: Context, ids: IntArray) { ids.forEach { WidgetPrefs.remove(context, it) }; if (AppWidgetManager.getInstance(context).getAppWidgetIds(ComponentName(context, TimetableWidgetProvider::class.java)).isEmpty()) WidgetRefresh.cancel(context) }
+    override fun onDisabled(context: Context) { WidgetRefresh.cancel(context) }
 }
 
 class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {

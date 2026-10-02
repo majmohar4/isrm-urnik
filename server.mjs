@@ -59,9 +59,9 @@ const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
 const MAX_UPSTREAM_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_URL_LENGTH = 2048;
 const MAX_CLIENT_STATES = 5_000;
-const MAX_CACHED_WEEKS_PER_PROGRAMME = 16;
+const MAX_CACHED_WEEKS_PER_PROGRAMME = 20;
 const RATE_WINDOW_MS = 60_000;
-const PRELOAD_WEEKS = Math.min(8, Math.max(1, Number(process.env.PRELOAD_WEEKS || 5)));
+const PRELOAD_WEEKS = Math.min(12, Math.max(1, Number(process.env.PRELOAD_WEEKS || 8)));
 const PRELOAD_REFRESH_MS = Math.max(60, Number(process.env.PRELOAD_REFRESH_MINUTES || 360)) * 60_000;
 const USER_RECHECK_MS = 60_000;
 const clientStates = new Map();
@@ -100,7 +100,10 @@ function clientKey(request) {
 
 function enforceRateLimit(request, response, path) {
   const now = Date.now();
-  const maxRequests = path.startsWith('/api/calendar') ? 15 : path.startsWith('/api/') ? 30 : 180;
+  const maxRequests = path.startsWith('/api/admin/') ? 5
+    : path.startsWith('/api/calendar') ? 15
+      : path === '/api/timetable' || path === '/api/month' ? 90
+        : path.startsWith('/api/') ? 30 : 180;
   const key = clientKey(request);
   let state = clientStates.get(key);
   if (!state) {
@@ -148,7 +151,7 @@ function loadCache() {
 function loadCustomEvents() {
   try {
     const loaded = JSON.parse(readFileSync(CUSTOM_EVENTS_FILE, 'utf8'));
-    return Array.isArray(loaded) ? loaded : [];
+    return Array.isArray(loaded) ? loaded.map((event) => event?.source === 'IŠRM' && event.type === 'Osebno' ? { ...event, type: 'Skupno' } : event) : [];
   } catch { return []; }
 }
 
