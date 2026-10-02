@@ -40,9 +40,15 @@ https://isrm.majmohar.eu/api/calendar/subscription?programme=1
 
 Replace `1` with `2` or `3` for the other programme years. The stable link returns the most recently cached calendar immediately and queues a source recheck in the background, so a calendar client is never held up by the scraper.
 
+For a personalized FRI timetable, enter your vpisna številka in Settings. The copied subscription link will include `&student=...` and use FRI's student allocation page to select your exercise and lab group when classes overlap.
+
 ## PWA updates
 
 The installed app checks for a new service worker whenever it opens, returns to the foreground, and once per hour while open. When one is available it activates immediately and reloads the app once, so users receive the newest release without clearing storage or reinstalling it.
+
+## Custom events
+
+Set `ADMIN_PASSWORD` in `.env` to enable the editor under Settings. On an authorized device, enter this password once and it remains stored locally. Added events are persisted in the Docker volume and appear in the timetable and iCalendar downloads/subscriptions.
 
 ## Reliability and rate limits
 

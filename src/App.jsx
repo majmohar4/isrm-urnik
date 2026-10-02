@@ -22,6 +22,14 @@ function plusDays(date, days) {
   return next;
 }
 
+function monthWeekStarts(date) {
+  const first = new Date(date.getFullYear(), date.getMonth(), 1);
+  const last = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  const weeks = [];
+  for (let cursor = monday(first); cursor <= last; cursor = plusDays(cursor, 7)) weeks.push(cursor);
+  return weeks;
+}
+
 function formatDate(date) {
   return new Intl.DateTimeFormat('sl-SI', { day: 'numeric', month: 'short' }).format(date).replace('.', '');
 }
@@ -33,7 +41,9 @@ function formatFetched(value) {
 
 function weekFromLocation() {
   const value = new URLSearchParams(window.location.search).get('week');
-  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? monday(`${value}T12:00:00`) : monday();
+  const saved = window.localStorage.getItem('timetable-last-week');
+  const candidate = value || saved;
+  return candidate && /^\d{4}-\d{2}-\d{2}$/.test(candidate) ? monday(`${candidate}T12:00:00`) : monday();
 }
 
 function Icon({ name, size = 20 }) {
@@ -132,9 +142,18 @@ function WholeWeek({ events, weekDays, onEventSelect }) {
   </div>;
 }
 
+function MonthView({ events, month, onEventSelect }) {
+  const weeks = monthWeekStarts(month);
+  return <div className="month-view" aria-label="Mesečni urnik"><header>{FULL_DAY_NAMES.map((day) => <b key={day}>{day.slice(0, 3)}</b>)}</header><div className="month-grid">{weeks.flatMap((week) => Array.from({ length: 5 }, (_, index) => {
+    const day = plusDays(week, index); const key = dateKey(day); const isCurrentMonth = day.getMonth() === month.getMonth();
+    return <section className={isCurrentMonth ? '' : 'is-outside'} key={key}><time>{day.getDate()}</time>{events.filter((event) => event.date === key).map((event) => <button key={event.id} className={`month-event month-event--${event.source.toLowerCase()}`} onClick={() => onEventSelect(event)}><span>{event.start}</span>{event.title}</button>)}</section>;
+  }))}</div></div>;
+}
+
 function App() {
   const [weekStart, setWeekStart] = useState(weekFromLocation);
   const [data, setData] = useState(null);
+  const [monthEvents, setMonthEvents] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
@@ -144,6 +163,14 @@ function App() {
   const [timelineDayIndex, setTimelineDayIndex] = useState(() => Math.max(0, new Date().getDay() - 1));
   const [theme, setTheme] = useState(() => window.localStorage.getItem('timetable-theme') || 'dark');
   const [programmeYear, setProgrammeYear] = useState(() => window.localStorage.getItem('timetable-programme-year') || '1');
+  const [studentNumber, setStudentNumber] = useState(() => window.localStorage.getItem('timetable-student-number') || '');
+  const [studentNumberDraft, setStudentNumberDraft] = useState(() => window.localStorage.getItem('timetable-student-number') || '');
+  const [studentNumberError, setStudentNumberError] = useState('');
+  const [adminPassword, setAdminPassword] = useState(() => window.localStorage.getItem('timetable-admin-password') || '');
+  const [adminDraft, setAdminDraft] = useState(() => window.localStorage.getItem('timetable-admin-password') || '');
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  const [adminError, setAdminError] = useState('');
+  const [customEvent, setCustomEvent] = useState({ title: '', date: dateKey(new Date()), start: '12:00', end: '13:00', room: '', programme: 'all' });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
@@ -163,7 +190,7 @@ function App() {
   const load = async (refresh = false) => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/timetable?week=${weekKey}&programme=${programmeYear}${refresh ? '&refresh=1' : ''}`);
+      const response = await fetch(`/api/timetable?week=${weekKey}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}${refresh ? '&refresh=1' : ''}`);
       const payload = await response.json();
       if (!response.ok && !payload.events?.length) throw new Error(payload.error || 'Povezava z urnikom ni uspela.');
       setData(payload);
@@ -174,7 +201,20 @@ function App() {
   };
   refreshRef.current = () => load(true);
 
-  useEffect(() => { setSelectedEvent(null); load(); }, [weekKey, programmeYear]);
+  useEffect(() => { setSelectedEvent(null); load(); }, [weekKey, programmeYear, studentNumber]);
+  useEffect(() => { window.localStorage.setItem('timetable-last-week', weekKey); }, [weekKey]);
+  useEffect(() => {
+    if (viewMode !== 'month') return;
+    let cancelled = false;
+    const weeks = monthWeekStarts(weekStart);
+    Promise.all(weeks.map(async (start) => {
+      const key = dateKey(start);
+      const response = await fetch(`/api/timetable?week=${key}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`);
+      const payload = await response.json();
+      return payload.events || [];
+    })).then((all) => { if (!cancelled) setMonthEvents(all.flat()); }).catch(() => { if (!cancelled) setMonthEvents([]); });
+    return () => { cancelled = true; };
+  }, [viewMode, weekKey, programmeYear, studentNumber]);
   useEffect(() => { weekRef.current = weekStart; }, [weekStart]);
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -200,12 +240,14 @@ function App() {
   }, []);
   useEffect(() => {
     let startY = null;
+    let startX = null;
     let distance = 0;
     let active = false;
-    const reset = () => { startY = null; distance = 0; active = false; setPullDistance(0); };
+    const reset = () => { startY = null; startX = null; distance = 0; active = false; setPullDistance(0); };
     const onStart = (event) => {
       if (refreshingRef.current || window.scrollY > 0 || event.touches.length !== 1) return;
       startY = event.touches[0].clientY;
+      startX = event.touches[0].clientX;
       active = true;
     };
     const onMove = (event) => {
@@ -216,7 +258,20 @@ function App() {
       setPullDistance(distance);
       event.preventDefault();
     };
-    const onEnd = () => {
+    const onEnd = (event) => {
+      const horizontal = startX === null ? 0 : event.changedTouches[0].clientX - startX;
+      if (Math.abs(horizontal) > 70 && Math.abs(horizontal) > Math.abs(distance)) {
+        const nextWeek = plusDays(weekRef.current, horizontal > 0 ? -7 : 7);
+        const nextKey = dateKey(nextWeek);
+        setNavigationDirection(horizontal > 0 ? 'back' : 'forward');
+        setNavigationKey((value) => value + 1);
+        setWeekStart(nextWeek);
+        const url = new URL(window.location.href);
+        url.searchParams.set('week', nextKey);
+        window.history.pushState({ week: nextKey }, '', `${url.pathname}${url.search}${url.hash}`);
+        reset();
+        return;
+      }
       const shouldRefresh = active && distance >= 62;
       reset();
       if (!shouldRefresh || refreshingRef.current) return;
@@ -257,7 +312,7 @@ function App() {
   }, []);
 
   const events = data?.events || [];
-  const subscriptionUrl = `${window.location.origin}/api/calendar/subscription?programme=${programmeYear}`;
+  const subscriptionUrl = `${window.location.origin}/api/calendar/subscription?programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`;
   const sourceIssues = data?.sources ? Object.entries(data.sources).filter(([, status]) => !status.ok) : [];
   const navigateWeek = (nextWeek, direction) => {
     const nextKey = dateKey(nextWeek);
@@ -275,6 +330,28 @@ function App() {
     try { await navigator.clipboard.writeText(subscriptionUrl); setCopyStatus('Povezava kopirana'); }
     catch { setCopyStatus('Kopiranje ni uspelo'); }
   };
+  const saveStudentNumber = () => {
+    const next = studentNumberDraft.trim();
+    if (next && !/^\d{6,16}$/.test(next)) { setStudentNumberError('Vnesi številko z 6–16 števkami.'); return; }
+    setStudentNumberError('');
+    setStudentNumber(next);
+    if (next) window.localStorage.setItem('timetable-student-number', next);
+    else window.localStorage.removeItem('timetable-student-number');
+  };
+  const adminRequest = async (path, body) => {
+    const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-isrm-admin-password': adminDraft || adminPassword }, body: JSON.stringify(body || {}) });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Administratorska zahteva ni uspela.');
+    return payload;
+  };
+  const unlockAdmin = async () => {
+    try { await adminRequest('/api/admin/verify'); setAdminPassword(adminDraft); window.localStorage.setItem('timetable-admin-password', adminDraft); setAdminUnlocked(true); setAdminError(''); }
+    catch (requestError) { setAdminError(requestError.message); }
+  };
+  const addCustomEvent = async () => {
+    try { await adminRequest('/api/admin/events', customEvent); setCustomEvent((event) => ({ ...event, title: '', room: '' })); setAdminError('Dogodek je dodan.'); load(true); }
+    catch (requestError) { setAdminError(requestError.message); }
+  };
 
   const pullOffset = Math.min(72, pullDistance) - 82;
   return <main className="app-shell">
@@ -283,8 +360,8 @@ function App() {
       <a className="brand" href="#top" aria-label="IŠRM, začetek"><span className="brand__mark"><Icon name="grid" size={19} /></span><span>IŠRM<br /><small>{programmeYear}. letnik · FRI program</small></span></a>
       <div className="topbar__right">
         <button className="theme-toggle" onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')} aria-pressed={theme === 'dark'} aria-label={theme === 'dark' ? 'Vklopi svetli videz' : 'Vklopi temni videz'}><Icon name="moon" size={16} /><span>{theme === 'dark' ? 'Svetlo' : 'Temno'}</span></button>
-        <div className="export-wrap"><button className="export-button" onClick={() => setExportOpen((open) => !open)} aria-expanded={exportOpen}><Icon name="calendar" size={16} /><span>Koledar .ics</span></button>{exportOpen && <div className="export-menu" role="dialog" aria-label="Izvoz koledarja"><a href={`/api/calendar?week=${encodeURIComponent(weekKey)}&programme=${programmeYear}`} download={`isrm-${programmeYear}-letnik-${weekKey}.ics`} onClick={() => setExportOpen(false)}>Prenesi ta teden</a><button onClick={copySubscription}>Kopiraj naročniško povezavo</button><small>{copyStatus || 'Povezava se samodejno posodablja.'}</small></div>}</div>
-        <div className="settings-wrap"><button className="icon-button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-label="Nastavitve programa"><Icon name="settings" /></button>{settingsOpen && <div className="settings-menu" role="dialog" aria-label="Nastavitve programa"><span>Program</span><div className="year-switch" role="group" aria-label="Letnik programa">{['1', '2', '3'].map((year) => <button key={year} className={programmeYear === year ? 'is-selected' : ''} onClick={() => { setProgrammeYear(year); setSettingsOpen(false); }} aria-pressed={programmeYear === year}>{year}. letnik</button>)}</div><small>Shranjeno v tej napravi</small></div>}</div>
+        <div className="export-wrap"><button className="export-button" onClick={() => setExportOpen((open) => !open)} aria-expanded={exportOpen}><Icon name="calendar" size={16} /><span>Koledar .ics</span></button>{exportOpen && <div className="export-menu" role="dialog" aria-label="Izvoz koledarja"><a href={`/api/calendar?week=${encodeURIComponent(weekKey)}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`} download={`isrm-${programmeYear}-letnik-${weekKey}.ics`} onClick={() => setExportOpen(false)}>Prenesi ta teden</a><button onClick={copySubscription}>{studentNumber ? 'Kopiraj osebno povezavo' : 'Kopiraj naročniško povezavo'}</button><small>{copyStatus || (studentNumber ? 'Vključene so tvoje FRI vaje.' : 'Povezava se samodejno posodablja.')}</small></div>}</div>
+        <div className="settings-wrap"><button className="icon-button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-label="Nastavitve programa"><Icon name="settings" /></button>{settingsOpen && <div className="settings-menu" role="dialog" aria-label="Nastavitve programa"><span>Program</span><div className="year-switch" role="group" aria-label="Letnik programa">{['1', '2', '3'].map((year) => <button key={year} className={programmeYear === year ? 'is-selected' : ''} onClick={() => setProgrammeYear(year)} aria-pressed={programmeYear === year}>{year}. letnik</button>)}</div><label className="student-number"><b>Vpisna številka</b><input value={studentNumberDraft} onChange={(event) => setStudentNumberDraft(event.target.value.replace(/\D/g, ''))} inputMode="numeric" autoComplete="off" placeholder="Za osebni urnik" /><small>Izbere tvojo FRI skupino pri prekrivanju vaj.</small></label><div className="settings-actions"><button onClick={saveStudentNumber}>Shrani</button>{studentNumber && <button onClick={() => { setStudentNumberDraft(''); setStudentNumber(''); window.localStorage.removeItem('timetable-student-number'); }}>Odstrani</button>}</div><label className="student-number"><b>Admin</b><input type="password" value={adminDraft} onChange={(event) => setAdminDraft(event.target.value)} autoComplete="current-password" placeholder="Geslo za urejanje" /></label>{!adminUnlocked ? <div className="settings-actions"><button onClick={unlockAdmin}>Odpri urejanje</button></div> : <div className="admin-events"><b>Dodaj dogodek</b><input value={customEvent.title} onChange={(event) => setCustomEvent((value) => ({ ...value, title: event.target.value }))} placeholder="Naslov" /><input type="date" value={customEvent.date} onChange={(event) => setCustomEvent((value) => ({ ...value, date: event.target.value }))} /><div><input type="time" value={customEvent.start} onChange={(event) => setCustomEvent((value) => ({ ...value, start: event.target.value }))} /><input type="time" value={customEvent.end} onChange={(event) => setCustomEvent((value) => ({ ...value, end: event.target.value }))} /></div><input value={customEvent.room} onChange={(event) => setCustomEvent((value) => ({ ...value, room: event.target.value }))} placeholder="Lokacija (neobvezno)" /><select value={customEvent.programme} onChange={(event) => setCustomEvent((value) => ({ ...value, programme: event.target.value }))}><option value="all">Vsi letniki</option><option value="1">1. letnik</option><option value="2">2. letnik</option><option value="3">3. letnik</option></select><div className="settings-actions"><button onClick={addCustomEvent}>Dodaj</button></div></div>}{(studentNumberError || adminError) && <p className="settings-error" role="alert">{studentNumberError || adminError}</p>}<small>{studentNumber ? 'Osebni urnik je vključen.' : 'Shranjeno v tej napravi'}</small></div>}</div>
         <button className="icon-button" onClick={() => load(true)} disabled={loading} aria-label="Osveži urnik"><Icon name="refresh" /></button>
       </div>
     </header>
@@ -302,10 +379,10 @@ function App() {
     {(error || sourceIssues.length > 0) && <div className="notice" role="status">{error || `Pozor: ${sourceIssues.map(([source, status]) => `${source} (${status.message || 'vir ni dosegljiv'})`).join('; ')}. Prikazani so zadnji uspešno shranjeni podatki.`}</div>}
 
     <section className="schedule" aria-label="Tedenski urnik">
-      <div className="schedule__heading"><h2>Urnik</h2><div><span>{events.length} {events.length === 1 ? 'obveznost' : 'obveznosti'}</span><div className="view-modes" role="group" aria-label="Prikaz urnika"><button className={viewMode === 'agenda' ? 'is-selected' : ''} onClick={() => setViewMode('agenda')} aria-pressed={viewMode === 'agenda'}>Seznam</button><button className={viewMode === 'timeline' ? 'is-selected' : ''} onClick={() => setViewMode('timeline')} aria-pressed={viewMode === 'timeline'}>Časovni</button><button className={viewMode === 'week' ? 'is-selected' : ''} onClick={() => setViewMode('week')} aria-pressed={viewMode === 'week'}>Ves teden</button></div></div></div>
+      <div className="schedule__heading"><h2>Urnik</h2><div><span>{events.length} {events.length === 1 ? 'obveznost' : 'obveznosti'}</span><div className="view-modes" role="group" aria-label="Prikaz urnika"><button className={viewMode === 'agenda' ? 'is-selected' : ''} onClick={() => setViewMode('agenda')} aria-pressed={viewMode === 'agenda'}>Seznam</button><button className={viewMode === 'timeline' ? 'is-selected' : ''} onClick={() => setViewMode('timeline')} aria-pressed={viewMode === 'timeline'}>Časovni</button><button className={viewMode === 'week' ? 'is-selected' : ''} onClick={() => setViewMode('week')} aria-pressed={viewMode === 'week'}>Teden</button><button className={viewMode === 'month' ? 'is-selected' : ''} onClick={() => setViewMode('month')} aria-pressed={viewMode === 'month'}>Mesec</button></div></div></div>
       {viewMode === 'agenda' && <div className="weekday-tabs">{weekDays.map((day, index) => <a key={dateKey(day)} href={`#day-${index}`} className={dateKey(day) === todayKey ? 'is-today' : ''}><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></a>)}</div>}
       {viewMode === 'timeline' && <div className="timeline-day-switch" role="group" aria-label="Dan v časovnem pogledu">{weekDays.map((day, index) => <button key={dateKey(day)} className={timelineDayIndex === index ? 'is-selected' : ''} onClick={() => setTimelineDayIndex(index)} aria-pressed={timelineDayIndex === index}><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></button>)}</div>}
-      {loading && !data ? <div className="schedule-skeleton">{Array.from({ length: 5 }, (_, index) => <span key={index} />)}</div> : viewMode === 'timeline' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="day" mobileDayIndex={timelineDayIndex} /> : viewMode === 'week' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="week" /> : <div className="agenda">
+      {loading && !data ? <div className="schedule-skeleton">{Array.from({ length: 5 }, (_, index) => <span key={index} />)}</div> : viewMode === 'timeline' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="day" mobileDayIndex={timelineDayIndex} /> : viewMode === 'week' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="week" /> : viewMode === 'month' ? <MonthView events={monthEvents} month={weekStart} onEventSelect={setSelectedEvent} /> : <div className="agenda">
         {weekDays.map((day, index) => {
           const dayEvents = events.filter((event) => event.date === dateKey(day));
           return <section className="agenda-day" id={`day-${index}`} key={dateKey(day)}>

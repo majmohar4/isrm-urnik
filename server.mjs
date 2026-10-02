@@ -1,10 +1,12 @@
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { extname, join, normalize } from 'node:path';
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || './data';
 const CACHE_FILE = join(DATA_DIR, 'timetable-cache.json');
+const CUSTOM_EVENTS_FILE = join(DATA_DIR, 'custom-events.json');
 const REFRESH_MS = Math.max(5, Number(process.env.REFRESH_MINUTES || 15)) * 60_000;
 const MIN_SOURCE_INTERVAL_MS = Math.max(2, Number(process.env.MIN_REQUEST_INTERVAL_SECONDS || 3)) * 1000;
 const PROGRAMME_SOURCES_FILE = process.env.PROGRAMME_SOURCES_FILE || './programme-sources.json';
@@ -48,6 +50,7 @@ const NTFY_SERVER = (process.env.NTFY_SERVER || 'https://ntfy.majmohar.eu').repl
 const NTFY_TOPIC = process.env.NTFY_TOPIC || 'isrm-alerts';
 const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
 const APP_VERSION = process.env.APP_VERSION || 'unversioned';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const DIST = join(process.cwd(), 'dist');
 const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
 const MAX_UPSTREAM_BODY_BYTES = 4 * 1024 * 1024;
@@ -63,11 +66,15 @@ const clientStates = new Map();
 mkdirSync(DATA_DIR, { recursive: true });
 
 let cache = loadCache();
+let customEvents = loadCustomEvents();
 const refreshInFlight = new Map();
 const sourceState = new Map();
 const recheckQueuedAt = new Map();
+const personalFriTemplates = new Map();
 const preloadState = { running: false, completed: 0, total: PRELOAD_WEEKS * Object.keys(PROGRAMMES).length, lastStartedAt: null, lastCompletedAt: null, lastError: null };
 const MAX_BACKOFF_MS = 30 * 60_000;
+const PERSONAL_TEMPLATE_TTL_MS = 6 * 60 * 60_000;
+const MAX_PERSONAL_TEMPLATES = 100;
 
 function setSecurityHeaders(response) {
   response.setHeader('x-content-type-options', 'nosniff');
@@ -135,6 +142,50 @@ function loadCache() {
   catch { return { fetchedAt: null, weeks: {}, sources: {} }; }
 }
 
+function loadCustomEvents() {
+  try {
+    const loaded = JSON.parse(readFileSync(CUSTOM_EVENTS_FILE, 'utf8'));
+    return Array.isArray(loaded) ? loaded : [];
+  } catch { return []; }
+}
+
+function persistCustomEvents() {
+  writeFileSync(CUSTOM_EVENTS_FILE, JSON.stringify(customEvents), 'utf8');
+}
+
+function customEventsFor(programme, weekKey, events) {
+  if (weekKey === 'subscription') return [...events, ...customEvents.filter((event) => event.programme === 'all' || event.programme === programme)];
+  const lastDay = isoDate(addDays(monday(`${weekKey}T12:00:00`), 4));
+  return [...events, ...customEvents.filter((event) => (event.programme === 'all' || event.programme === programme) && event.date >= weekKey && event.date <= lastDay)]
+    .sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`));
+}
+
+function adminAuthorized(request) {
+  const supplied = String(request.headers['x-isrm-admin-password'] || '');
+  if (!ADMIN_PASSWORD || supplied.length !== ADMIN_PASSWORD.length) return false;
+  return timingSafeEqual(Buffer.from(supplied), Buffer.from(ADMIN_PASSWORD));
+}
+
+async function readJson(request) {
+  let body = '';
+  for await (const chunk of request) {
+    body += chunk;
+    if (body.length > 16_384) throw new Error('Payload too large');
+  }
+  return JSON.parse(body || '{}');
+}
+
+function customEventFrom(input) {
+  const clean = (value, max = 120) => String(value || '').trim().slice(0, max);
+  const title = clean(input.title);
+  const date = clean(input.date, 10);
+  const start = clean(input.start, 5);
+  const end = clean(input.end, 5);
+  const programme = ['all', '1', '2', '3'].includes(input.programme) ? input.programme : 'all';
+  if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || end <= start) throw new Error('Neveljavni podatki dogodka.');
+  return { id: `custom-${randomUUID()}`, source: 'IŠRM', title, type: clean(input.type, 32) || 'Osebno', date, start, end, room: clean(input.room, 80), teacher: clean(input.teacher, 80), programme };
+}
+
 function persistCache() {
   for (const stored of Object.values(cache.programmes || {})) {
     const staleWeeks = Object.entries(stored.weeks || {}).sort(([, a], [, b]) => new Date(b.fetchedAt) - new Date(a.fetchedAt)).slice(MAX_CACHED_WEEKS_PER_PROGRAMME);
@@ -152,6 +203,17 @@ function programmeCache(programme) {
   if (!cache.programmes) cache.programmes = {};
   cache.programmes[id] ||= { weeks: {}, sources: {}, friTemplate: null };
   return cache.programmes[id];
+}
+
+function studentNumber(value) {
+  return /^\d{6,16}$/.test(value || '') ? value : null;
+}
+
+function personalFriUrl(programme, student) {
+  const source = new URL(PROGRAMMES[programme].friUrl);
+  source.search = '';
+  source.searchParams.set('student', student);
+  return source.toString();
 }
 
 async function sendNtfyNotification({ title, tags, body, timeoutMs = 10_000 }) {
@@ -180,7 +242,7 @@ async function notifySourceChanges(previous, current) {
     ? `${source} timetable source recovered.`
     : `${source} timetable source failed: ${current[source].message || 'unknown error'}`).join(' ');
   await sendNtfyNotification({
-    title: 'IŠRM urnik',
+    title: 'ISRM urnik',
     tags: current[transitions[0]].ok ? 'white_check_mark' : 'warning',
     body: `IŠRM: ${summary}`,
   });
@@ -285,7 +347,8 @@ function timeFromPercent(percent) {
 
 function parseFri(html, weekStart, sourceUrl) {
   if (!/allocations|timetable/i.test(html)) throw new Error('FRI format changed: timetable marker was not found');
-  if (!new URL(sourceUrl).searchParams.get('group')) throw new Error('FRI configuration is missing the selected group');
+  const sourceParams = new URL(sourceUrl).searchParams;
+  if (!sourceParams.get('group') && !sourceParams.get('student')) throw new Error('FRI configuration is missing the selected group or student');
   const dayIndex = { MON: 0, TUE: 1, WED: 2, THU: 3, FRI: 4 };
   const events = [];
   const entries = html.split(/<div class="grid-entry"\s/i).slice(1);
@@ -453,6 +516,28 @@ async function refreshWeek(programme, weekKey, { force = false } = {}) {
   return refresh;
 }
 
+async function personalizedFriEvents(programme, weekKey, student) {
+  const key = `${programme}:${student}`;
+  const existing = personalFriTemplates.get(key);
+  const weekStart = monday(`${weekKey}T12:00:00`);
+  if (existing && Date.now() - new Date(existing.fetchedAt).getTime() < PERSONAL_TEMPLATE_TTL_MS) return materializeFriTemplate(existing.events, weekStart);
+  const html = await fetchText(`FRI-personal-${programme}`, personalFriUrl(programme, student));
+  const events = parseFri(html, weekStart, personalFriUrl(programme, student));
+  if (personalFriTemplates.size >= MAX_PERSONAL_TEMPLATES) personalFriTemplates.delete(personalFriTemplates.keys().next().value);
+  personalFriTemplates.set(key, { fetchedAt: new Date().toISOString(), events: createFriTemplate(events, weekStart) });
+  return events;
+}
+
+async function personalizedWeek(programme, weekKey, student, options) {
+  const base = await refreshWeek(programme, weekKey, options);
+  const personalFri = await personalizedFriEvents(programme, weekKey, student);
+  return {
+    ...base,
+    events: [...base.events.filter((event) => event.source !== 'FRI'), ...personalFri]
+      .sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`)),
+  };
+}
+
 function queueRecheck(programme, weekKey) {
   const key = `${programme}:${weekKey}`;
   const now = Date.now();
@@ -525,13 +610,13 @@ function sendCalendar(response, programme, weekKey, events) {
     'content-disposition': `attachment; filename="${filename}"`,
     'cache-control': 'no-store',
   });
-  response.end(calendarText(programme, weekKey, events));
+  response.end(calendarText(programme, weekKey, customEventsFor(programme, weekKey, events)));
 }
 
 const server = createServer(async (request, response) => {
   setSecurityHeaders(response);
-  if (request.method !== 'GET') {
-    response.writeHead(405, { allow: 'GET', 'content-type': 'application/json; charset=utf-8' });
+  if (!['GET', 'POST'].includes(request.method || '')) {
+    response.writeHead(405, { allow: 'GET, POST', 'content-type': 'application/json; charset=utf-8' });
     return response.end(JSON.stringify({ error: 'Metoda ni podprta.' }));
   }
   if (!request.url || request.url.length > MAX_URL_LENGTH) {
@@ -542,36 +627,65 @@ const server = createServer(async (request, response) => {
   const requestedWeek = url.searchParams.get('week');
   if (requestedWeek && !/^\d{4}-\d{2}-\d{2}$/.test(requestedWeek)) return sendJson(response, { error: 'Neveljaven teden.' }, 400);
   if (!enforceRateLimit(request, response, url.pathname)) return;
+  if (url.pathname.startsWith('/api/admin/')) {
+    if (request.method !== 'POST') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
+    if (!adminAuthorized(request)) return sendJson(response, { error: 'Napačno administratorsko geslo.' }, 401);
+    try {
+      if (url.pathname === '/api/admin/verify') return sendJson(response, { ok: true });
+      const input = await readJson(request);
+      if (url.pathname === '/api/admin/events') {
+        const event = customEventFrom(input);
+        customEvents.push(event);
+        persistCustomEvents();
+        return sendJson(response, { event }, 201);
+      }
+      if (url.pathname === '/api/admin/events/delete') {
+        const before = customEvents.length;
+        customEvents = customEvents.filter((event) => event.id !== input.id);
+        if (customEvents.length === before) return sendJson(response, { error: 'Dogodek ni najden.' }, 404);
+        persistCustomEvents();
+        return sendJson(response, { ok: true });
+      }
+      return sendJson(response, { error: 'Pot ni najdena.' }, 404);
+    } catch (error) { return sendJson(response, { error: error.message || 'Neveljavna zahteva.' }, 400); }
+  }
+  if (request.method !== 'GET') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
   if (url.pathname === '/api/timetable') {
     const programme = programmeId(url.searchParams.get('programme'));
+    const studentParam = url.searchParams.get('student');
+    const student = studentNumber(studentParam);
+    if (studentParam && !student) return sendJson(response, { error: 'Neveljavna vpisna številka.' }, 400);
     const stored = programmeCache(programme);
     const requested = url.searchParams.get('week');
     const weekKey = isoDate(monday(requested ? `${requested}T12:00:00` : new Date()));
     const manualRefresh = url.searchParams.get('refresh') === '1';
     const cachedWeek = stored.weeks[weekKey];
-    if (cachedWeek && !manualRefresh) {
+    if (cachedWeek && !manualRefresh && !student) {
       queueRecheck(programme, weekKey);
-      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, weekStart: weekKey, ...cachedWeek, sources: stored.sources, refreshMinutes: REFRESH_MS / 60_000, revalidating: true });
+      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, weekStart: weekKey, ...cachedWeek, events: customEventsFor(programme, weekKey, cachedWeek.events), sources: stored.sources, refreshMinutes: REFRESH_MS / 60_000, revalidating: true });
     }
     try {
-      const week = await refreshWeek(programme, weekKey, { force: manualRefresh });
-      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, weekStart: weekKey, ...week, sources: stored.sources, refreshMinutes: REFRESH_MS / 60_000 });
+      const week = student ? await personalizedWeek(programme, weekKey, student, { force: manualRefresh }) : await refreshWeek(programme, weekKey, { force: manualRefresh });
+      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, weekStart: weekKey, ...week, events: customEventsFor(programme, weekKey, week.events), sources: stored.sources, refreshMinutes: REFRESH_MS / 60_000, personalized: Boolean(student) });
     } catch (error) {
       return sendJson(response, { error: 'Urnika trenutno ni mogoče osvežiti.', detail: error.message, programme, weekStart: weekKey, events: stored.weeks[weekKey]?.events || [], sources: stored.sources }, 503);
     }
   }
   if (url.pathname === '/api/calendar') {
     const programme = programmeId(url.searchParams.get('programme'));
+    const studentParam = url.searchParams.get('student');
+    const student = studentNumber(studentParam);
+    if (studentParam && !student) return sendJson(response, { error: 'Neveljavna vpisna številka.' }, 400);
     const stored = programmeCache(programme);
     const requested = url.searchParams.get('week');
     const weekKey = isoDate(monday(requested ? `${requested}T12:00:00` : new Date()));
     const cachedWeek = stored.weeks[weekKey];
-    if (cachedWeek) {
+    if (cachedWeek && !student) {
       queueRecheck(programme, weekKey);
       return sendCalendar(response, programme, weekKey, cachedWeek.events);
     }
     try {
-      const week = await refreshWeek(programme, weekKey);
+      const week = student ? await personalizedWeek(programme, weekKey, student) : await refreshWeek(programme, weekKey);
       return sendCalendar(response, programme, weekKey, week.events);
     } catch {
       const events = stored.weeks[weekKey]?.events || [];
@@ -581,14 +695,20 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === '/api/calendar/subscription') {
     const programme = programmeId(url.searchParams.get('programme'));
+    const studentParam = url.searchParams.get('student');
+    const student = studentNumber(studentParam);
+    if (studentParam && !student) return sendJson(response, { error: 'Neveljavna vpisna številka.' }, 400);
     const stored = programmeCache(programme);
     const weekKey = isoDate(monday());
     const events = Object.values(stored.weeks).flatMap((week) => week.events || []).sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`));
     queueRecheck(programme, weekKey);
-    if (events.length) return sendCalendar(response, programme, 'subscription', events);
+    if (events.length && !student) return sendCalendar(response, programme, 'subscription', events);
     try {
-      const week = await refreshWeek(programme, weekKey);
-      return sendCalendar(response, programme, 'subscription', week.events);
+      if (!events.length) await refreshWeek(programme, weekKey);
+      const personalizedEvents = student
+        ? (await Promise.all(Object.keys(stored.weeks).map(async (key) => (await personalizedWeek(programme, key, student)).events))).flat()
+        : Object.values(stored.weeks).flatMap((week) => week.events || []);
+      return sendCalendar(response, programme, 'subscription', personalizedEvents);
     } catch {
       return sendJson(response, { error: 'Koledarja trenutno ni mogoče pripraviti.' }, 503);
     }
@@ -615,7 +735,7 @@ async function shutDown(signal) {
   isShuttingDown = true;
   console.log(`Received ${signal}; shutting down.`);
   await sendNtfyNotification({
-    title: 'IŠRM urnik se ustavlja',
+    title: 'ISRM urnik se ustavlja',
     tags: 'warning',
     body: `IŠRM timetable service is shutting down (${APP_VERSION}).`,
     timeoutMs: 4_000,
@@ -630,7 +750,7 @@ process.on('SIGINT', () => { void shutDown('SIGINT'); });
 server.listen(PORT, () => {
   console.log(`Skupni urnik is listening on :${PORT}`);
   void sendNtfyNotification({
-    title: 'IŠRM urnik je pripravljen',
+    title: 'ISRM urnik je pripravljen',
     tags: 'white_check_mark',
     body: `IŠRM timetable service is online (${APP_VERSION}).`,
   });

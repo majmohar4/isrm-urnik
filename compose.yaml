@@ -27,6 +27,7 @@ services:
       NTFY_TOPIC: ${NTFY_TOPIC:-isrm-alerts}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
       APP_VERSION: ${APP_VERSION:-unversioned}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       TRUST_PROXY: "true"
     volumes:
       - timetable-cache:/data
