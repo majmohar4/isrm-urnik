@@ -1,7 +1,7 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
-val appVersionName = providers.gradleProperty("VERSION_NAME").getOrElse("1.0")
-val appVersionCode = providers.gradleProperty("VERSION_CODE").getOrElse("1").toInt()
+val appVersionName = providers.gradleProperty("VERSION_NAME").getOrElse("1.2")
+val appVersionCode = providers.gradleProperty("VERSION_CODE").getOrElse("2").toInt()
 val releaseStoreFile = providers.gradleProperty("RELEASE_STORE_FILE").orNull
 val releaseStorePassword = providers.gradleProperty("RELEASE_STORE_PASSWORD").orNull
 val releaseKeyAlias = providers.gradleProperty("RELEASE_KEY_ALIAS").orNull
