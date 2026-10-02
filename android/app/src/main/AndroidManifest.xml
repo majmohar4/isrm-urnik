@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <application android:allowBackup="false" android:icon="@drawable/ic_launcher" android:label="IŠRM" android:supportsRtl="true" android:theme="@style/AppTheme">
+    <application android:allowBackup="false" android:icon="@drawable/ic_launcher" android:label="IŠRM" android:networkSecurityConfig="@xml/network_security_config" android:supportsRtl="true" android:theme="@style/AppTheme" android:usesCleartextTraffic="false">
         <activity android:name=".WidgetConfigureActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:enableOnBackInvokedCallback="true" android:exported="true">
             <intent-filter>

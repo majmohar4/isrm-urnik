@@ -31,6 +31,9 @@ android {
     buildTypes {
         getByName("release") {
             signingConfig = signingConfigs.findByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
     buildFeatures { buildConfig = true }
@@ -45,6 +48,13 @@ tasks.register<Copy>("packageReleaseApk") {
     from(layout.buildDirectory.dir("outputs/apk/release")) { include("*.apk") }
     into(layout.buildDirectory.dir("outputs/distribution"))
     rename { "IŠRM-${appVersionName}.apk" }
+}
+
+tasks.register<Copy>("exportPlayBundle") {
+    dependsOn("bundleRelease")
+    from(layout.buildDirectory.dir("outputs/bundle/release")) { include("*.aab") }
+    into(layout.buildDirectory.dir("outputs/distribution"))
+    rename { "IŠRM-${appVersionName}.aab" }
 }
 
 kotlin { jvmToolchain(17) }

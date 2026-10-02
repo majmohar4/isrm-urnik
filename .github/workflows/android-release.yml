@@ -45,14 +45,14 @@ jobs:
         run: |
           test -n "$ANDROID_KEYSTORE_BASE64"
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/isrm-release.jks"
-      - name: Build signed APK
+      - name: Build signed APK and Play bundle
         working-directory: android
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          ./gradlew :app:packageReleaseApk \
+          ./gradlew :app:packageReleaseApk :app:exportPlayBundle \
             -PVERSION_NAME="${{ steps.version.outputs.name }}" \
             -PVERSION_CODE="${{ steps.version.outputs.code }}" \
             -PRELEASE_STORE_FILE="$RUNNER_TEMP/isrm-release.jks" \
@@ -64,3 +64,9 @@ jobs:
         with:
           generate_release_notes: true
           files: android/app/build/outputs/distribution/IŠRM-${{ steps.version.outputs.name }}.apk
+      - name: Upload Play Console bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: IŠRM-${{ steps.version.outputs.name }}-play-bundle
+          path: android/app/build/outputs/distribution/IŠRM-${{ steps.version.outputs.name }}.aab
+          if-no-files-found: error

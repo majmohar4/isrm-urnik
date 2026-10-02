@@ -6,7 +6,7 @@ This is a fully native Android timetable. It stores timetable weeks locally, ren
 
 1. Open the `android` folder in Android Studio (JDK 17 and Android SDK 35), or run `./gradlew :app:assembleDebug`.
 2. In `gradle.properties`, set `WEB_APP_URL` to the HTTPS address of the deployed app.
-3. Use **Build > Generate Signed Bundle / APK** to produce a signed release APK. Supply `VERSION_NAME` and `VERSION_CODE`, then run `./gradlew :app:packageReleaseApk`; its distribution output is named `IŠRM-<VERSION_NAME>.apk`.
+3. Use **Build > Generate Signed Bundle / APK** to produce a signed release. Supply `VERSION_NAME` and an ever-increasing `VERSION_CODE`, then run `./gradlew :app:packageReleaseApk :app:exportPlayBundle`. Its distribution outputs are `IŠRM-<VERSION_NAME>.apk` (direct download) and `IŠRM-<VERSION_NAME>.aab` (Google Play upload).
 
 The widget configuration screen supports a next-lesson card and a whole-day layout. It reads the same local cache as the app when offline. Only while at least one widget exists, it uses a network-constrained WorkManager refresh every six hours; the app itself does not run a repeating background task. Android may delay background work under battery-saving rules, and tapping the widget refresh control triggers an immediate refresh. The merged AndroidX worker manifest adds standard network and background-scheduling permissions; the app requests no location, contacts, camera, files, or notification access.
 
@@ -24,4 +24,17 @@ ANDROID_RELEASE_URL=https://isrm.majmohar.eu/android
 
 Android visitors to the website are offered the native APK instead of the PWA. The app checks `/api/release` on launch; if its installed version is older, it opens `/android?installed=<version>`. That stable update page compares versions and offers the current signed APK. Android requires a user confirmation before installing an APK, so neither the website nor the app silently installs it.
 
-Before a Play Store release, complete the Play Console Data safety declaration using the public policy at `https://isrm.majmohar.eu/privacy` and the actual signed build's behavior.
+## Play Store and security
+
+The direct GitHub APK is signed, but Android can still show an installation warning for every app installed from a browser. That warning identifies a **sideloaded source**; it cannot be removed by code in the app. Do not promise users otherwise.
+
+For the normal, store-verified experience, upload the signed `IŠRM-<VERSION_NAME>.aab` to Google Play Console and use [Play App Signing](https://support.google.com/googleplay/android-developer/answer/9842756). The GitHub workflow now creates that AAB as a private workflow artifact for each tag. Keep the package id (`eu.majmohar.isrm`), upload key, and signing lineage stable; a lost signing key prevents updates to existing direct installs.
+
+Before submitting a Play release:
+
+1. Upload the AAB to internal testing first and resolve every Play pre-launch report issue.
+2. Complete the Data safety declaration from the behavior of the submitted build, and link the public policy at `https://isrm.majmohar.eu/privacy`.
+3. Publish a truthful store listing, developer contact email, screenshots, and a release note. Do not claim automatic or silent APK installation.
+4. Keep Android, Gradle dependencies, and the signing key current. Review the release APK with `apkanalyzer` or Android Studio before publishing.
+
+The app deliberately has a small permission surface: only `INTERNET` is declared by the app itself; backups are disabled; clear-text HTTP is forbidden by both the manifest and network-security configuration; and release builds are R8-minified and resource-shrunk. Its fixed production endpoint must therefore be HTTPS. These controls reduce risk but do not override Google Play's independent review or Play Protect decisions.

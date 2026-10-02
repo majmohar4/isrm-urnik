@@ -48,6 +48,12 @@ For a personalized FRI timetable, enter your vpisna številka in Settings. The c
 
 The installed app checks for a new service worker whenever it opens, returns to the foreground, and once per hour while open. When one is available it activates immediately and reloads the app once, so users receive the newest release without clearing storage or reinstalling it.
 
+## Android and iPhone installation
+
+Android visitors are offered the native signed APK when `ANDROID_APK_URL` is configured. An APK downloaded from a browser is a sideloaded install, so Android may ask the user to permit that browser as an install source even when the APK is signed. This cannot be removed by application code. For a normal store-verified installation path, publish the generated AAB through Google Play with Play App Signing; see [android/README.md](android/README.md) and [SECURITY.md](SECURITY.md).
+
+On iPhone, IŠRM is offered as a PWA. Safari and Chrome can add it to the Home Screen. When Brave is detected, the install banner explicitly tells users to open the site in Chrome or Safari first because Brave's iPhone installation behavior is not reliable.
+
 ## Custom events
 
 Set `ADMIN_PASSWORD` in `.env` to enable the editor under Settings. On an authorized device, enter this password once and it remains stored locally. Added events are persisted in the Docker volume and appear in the timetable and iCalendar downloads/subscriptions.
