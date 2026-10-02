@@ -644,7 +644,7 @@ const server = createServer(async (request, response) => {
     response.writeHead(414, { 'content-type': 'application/json; charset=utf-8' });
     return response.end(JSON.stringify({ error: 'Zahteva je predolga.' }));
   }
-  const url = new URL(request.url, `http://${request.headers.host}`);
+  const url = new URL(request.url, 'http://localhost');
   const requestedWeek = url.searchParams.get('week');
   if (requestedWeek && !/^\d{4}-\d{2}-\d{2}$/.test(requestedWeek)) return sendJson(response, { error: 'Neveljaven teden.' }, 400);
   if (!enforceRateLimit(request, response, url.pathname)) return;
