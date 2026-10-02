@@ -52,6 +52,7 @@ const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
 const APP_VERSION = process.env.APP_VERSION || 'unversioned';
 const ANDROID_APP_VERSION = process.env.ANDROID_APP_VERSION || '1.0';
 const ANDROID_APK_URL = process.env.ANDROID_APK_URL || '';
+const ANDROID_RELEASE_URL = process.env.ANDROID_RELEASE_URL || '/android';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const DIST = join(process.cwd(), 'dist');
 const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
@@ -185,7 +186,7 @@ function customEventFrom(input) {
   const end = clean(input.end, 5);
   const programme = ['all', '1', '2', '3'].includes(input.programme) ? input.programme : 'all';
   if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || end <= start) throw new Error('Neveljavni podatki dogodka.');
-  return { id: `custom-${randomUUID()}`, source: 'IŠRM', title, type: clean(input.type, 32) || 'Osebno', date, start, end, room: clean(input.room, 80), teacher: clean(input.teacher, 80), programme };
+  return { id: `custom-${randomUUID()}`, source: 'IŠRM', title, type: clean(input.type, 32) || 'Skupno', date, start, end, room: clean(input.room, 80), teacher: clean(input.teacher, 80), programme };
 }
 
 function persistCache() {
@@ -600,6 +601,15 @@ function sendJson(response, payload, status = 200) {
   response.end(JSON.stringify(payload));
 }
 
+function publicReleaseUrl(value, { allowPath = false } = {}) {
+  if (!value) return '';
+  if (allowPath && value.startsWith('/')) return value;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url.href : '';
+  } catch { return ''; }
+}
+
 function icalEscape(value = '') {
   return String(value).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
 }
@@ -671,7 +681,11 @@ const server = createServer(async (request, response) => {
     } catch (error) { return sendJson(response, { error: error.message || 'Neveljavna zahteva.' }, 400); }
   }
   if (request.method !== 'GET') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
-  if (url.pathname === '/api/release') return sendJson(response, { androidVersion: ANDROID_APP_VERSION, androidApkUrl: ANDROID_APK_URL });
+  if (url.pathname === '/api/release') return sendJson(response, {
+    androidVersion: ANDROID_APP_VERSION,
+    androidApkUrl: publicReleaseUrl(ANDROID_APK_URL),
+    androidReleaseUrl: publicReleaseUrl(ANDROID_RELEASE_URL, { allowPath: true }) || '/android',
+  });
   if (url.pathname === '/api/student-programme') {
     const student = studentNumber(url.searchParams.get('student'));
     if (!student) return sendJson(response, { error: 'Neveljavna vpisna številka.' }, 400);

@@ -40,6 +40,18 @@ function formatFetched(value) {
   return new Intl.DateTimeFormat('sl-SI', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 }
 
+function isNewerVersion(remote, installed) {
+  const remoteParts = String(remote || '').split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const installedParts = String(installed || '').split('.').map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(remoteParts.length, installedParts.length); index += 1) {
+    const difference = (remoteParts[index] || 0) - (installedParts[index] || 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return false;
+}
+
+const isAndroidDevice = () => /Android/i.test(navigator.userAgent);
+
 function weekFromLocation() {
   const value = new URLSearchParams(window.location.search).get('week');
   const saved = window.localStorage.getItem('timetable-last-week');
@@ -61,6 +73,7 @@ function Icon({ name, size = 20 }) {
     pin: <><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" /><circle cx="12" cy="10" r="2.5" /></>,
     book: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Z" /><path d="M4 19a2.5 2.5 0 0 1 2.5-2.5H20" /></>,
     grid: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
+    plus: <path d="M12 5v14M5 12h14" />,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{shapes[name]}</svg>;
 }
@@ -170,8 +183,43 @@ function PrivacyPolicy() {
   </main>;
 }
 
+function AndroidReleasePage() {
+  const [release, setRelease] = useState(null);
+  const [error, setError] = useState('');
+  const installedVersion = new URLSearchParams(window.location.search).get('installed') || '';
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/release')
+      .then(async (response) => ({ response, payload: await response.json() }))
+      .then(({ response, payload }) => {
+        if (!response.ok) throw new Error(payload.error || 'Podatkov o izdaji ni mogoče naložiti.');
+        if (!cancelled) setRelease(payload);
+      })
+      .catch((requestError) => { if (!cancelled) setError(requestError.message || 'Podatkov o izdaji ni mogoče naložiti.'); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const updateAvailable = Boolean(installedVersion && release && isNewerVersion(release.androidVersion, installedVersion));
+  const downloadAvailable = Boolean(release?.androidApkUrl);
+  return <main className="android-release-page">
+    <a className="privacy-back" href="/">Nazaj na urnik</a>
+    <p className="privacy-kicker">IŠRM za Android</p>
+    <h1>Urnik, tudi brez povezave.</h1>
+    <p className="android-release-lead">Native Android aplikacija shrani urnik v napravo, hitro odpre zadnje podatke in vključuje pripomočke za naslednje predavanje ali cel dan.</p>
+    {error && <p className="android-release-error" role="alert">{error}</p>}
+    {!release && !error && <div className="android-release-loading" aria-live="polite"><span /><span /><span /></div>}
+    {release && <section className="android-release-download" aria-label="Prenos Android aplikacije">
+      <div><b>{updateAvailable ? 'Posodobitev je pripravljena' : installedVersion ? 'Aplikacija je posodobljena' : 'Zadnja izdaja'}</b><strong>IŠRM {release.androidVersion}</strong><p>{updateAvailable ? `Nameščena je različica ${installedVersion}.` : 'Android 8 ali novejši · brez računov in oglasov.'}</p></div>
+      {downloadAvailable ? <a href={release.androidApkUrl} className="android-release-action"><Icon name="download" size={18} />{updateAvailable ? 'Prenesi posodobitev' : 'Prenesi APK'}</a> : <p className="android-release-pending">APK še ni objavljen. Poskusi znova pozneje.</p>}
+    </section>}
+    <section className="android-release-notes"><h2>Kako poteka posodobitev</h2><p>Ko odpreš Android aplikacijo, sama preveri različico. Če je na voljo novejša, te odpre na tej strani, kjer z enim dotikom preneseš podpisan APK. Android zaradi varnosti nikoli ne dovoli samodejne namestitve brez tvoje potrditve.</p></section>
+  </main>;
+}
+
 function App() {
   if (window.location.pathname === '/privacy') return <PrivacyPolicy />;
+  if (window.location.pathname === '/android') return <AndroidReleasePage />;
   const [weekStart, setWeekStart] = useState(weekFromLocation);
   const [data, setData] = useState(null);
   const [monthEvents, setMonthEvents] = useState([]);
@@ -179,6 +227,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
   const [installPrompt, setInstallPrompt] = useState(null);
+  const [androidRelease, setAndroidRelease] = useState(null);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [viewMode, setViewMode] = useState(() => window.localStorage.getItem('timetable-view') || 'agenda');
   const [timelineDayIndex, setTimelineDayIndex] = useState(() => Math.max(0, new Date().getDay() - 1));
@@ -192,6 +241,7 @@ function App() {
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [adminError, setAdminError] = useState('');
   const [customEvent, setCustomEvent] = useState({ title: '', date: dateKey(new Date()), start: '12:00', end: '13:00', room: '', programme: 'all' });
+  const [eventComposerOpen, setEventComposerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
@@ -334,6 +384,15 @@ function App() {
     window.addEventListener('beforeinstallprompt', listen);
     return () => window.removeEventListener('beforeinstallprompt', listen);
   }, []);
+  useEffect(() => {
+    if (!isAndroidDevice()) return undefined;
+    let cancelled = false;
+    fetch('/api/release')
+      .then((response) => response.ok ? response.json() : null)
+      .then((release) => { if (!cancelled) setAndroidRelease(release); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   const events = data?.events || [];
   const subscriptionUrl = `${window.location.origin}/api/calendar/subscription?programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`;
@@ -386,8 +445,28 @@ function App() {
     try { await adminRequest('/api/admin/verify'); setAdminPassword(adminDraft); window.localStorage.setItem('timetable-admin-password', adminDraft); setAdminUnlocked(true); setAdminError(''); }
     catch (requestError) { setAdminError(requestError.message); }
   };
-  const addCustomEvent = async () => {
-    try { await adminRequest('/api/admin/events', customEvent); setCustomEvent((event) => ({ ...event, title: '', room: '' })); setAdminError('Dogodek je dodan.'); load(true); }
+  const openEventComposer = () => {
+    setAdminError('');
+    setCustomEvent({ title: '', date: weekKey, start: '12:00', end: '13:00', room: '', programme: programmeYear });
+    setEventComposerOpen(true);
+  };
+  const addCustomEvent = async (submitEvent) => {
+    submitEvent?.preventDefault();
+    if (!customEvent.title.trim()) { setAdminError('Vnesi naslov dogodka.'); return; }
+    try {
+      const { event } = await adminRequest('/api/admin/events', { ...customEvent, title: customEvent.title.trim(), programme: programmeYear });
+      const eventWeek = monday(`${event.date}T12:00:00`);
+      if (dateKey(eventWeek) !== weekKey) {
+        setEventComposerOpen(false);
+        navigateWeek(eventWeek, eventWeek < weekStart ? 'back' : 'forward');
+        setAdminError('');
+        return;
+      }
+      setData((current) => current ? { ...current, events: [...current.events.filter((item) => item.id !== event.id), event].sort((a, b) => `${a.date}T${a.start}`.localeCompare(`${b.date}T${b.start}`)) } : current);
+      if (event.date.slice(0, 7) === weekKey.slice(0, 7)) setMonthEvents((current) => [...current.filter((item) => item.id !== event.id), event].sort((a, b) => `${a.date}T${a.start}`.localeCompare(`${b.date}T${b.start}`)));
+      setEventComposerOpen(false);
+      setAdminError('');
+    }
     catch (requestError) { setAdminError(requestError.message); }
   };
 
@@ -400,7 +479,19 @@ function App() {
       <div className="topbar__right">
         <button className="theme-toggle" onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')} aria-pressed={theme === 'dark'} aria-label={theme === 'dark' ? 'Vklopi svetli videz' : 'Vklopi temni videz'}><Icon name="moon" size={16} /><span>{theme === 'dark' ? 'Svetlo' : 'Temno'}</span></button>
         <div className="export-wrap"><button className="export-button" onClick={() => setExportOpen((open) => !open)} aria-expanded={exportOpen}><Icon name="calendar" size={16} /><span>Koledar .ics</span></button>{exportOpen && <div className="export-menu" role="dialog" aria-label="Izvoz koledarja"><a href={`/api/calendar?week=${encodeURIComponent(weekKey)}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`} download={`isrm-${programmeYear}-letnik-${weekKey}.ics`} onClick={() => setExportOpen(false)}>Prenesi ta teden</a><button onClick={copySubscription}>{studentNumber ? 'Kopiraj osebno povezavo' : 'Kopiraj naročniško povezavo'}</button><small>{copyStatus || (studentNumber ? 'Vključene so tvoje FRI vaje.' : 'Povezava se samodejno posodablja.')}</small></div>}</div>
-        <div className="settings-wrap"><button className="icon-button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-label="Nastavitve programa"><Icon name="settings" /></button>{settingsOpen && <div className="settings-menu" role="dialog" aria-label="Nastavitve programa"><span>Program</span><div className="year-switch" role="group" aria-label="Letnik programa">{['1', '2', '3'].map((year) => <button key={year} className={programmeYear === year ? 'is-selected' : ''} onClick={() => setProgrammeYear(year)} aria-pressed={programmeYear === year}>{year}. letnik</button>)}</div><label className="student-number"><b>Vpisna številka</b><input value={studentNumberDraft} onChange={(event) => setStudentNumberDraft(event.target.value.replace(/\D/g, ''))} inputMode="numeric" autoComplete="off" placeholder="Za osebni urnik" /><small>Izbere tvojo FRI skupino pri prekrivanju vaj.</small></label><div className="settings-actions"><button onClick={saveStudentNumber}>Shrani</button>{studentNumber && <button onClick={() => { setStudentNumberDraft(''); setStudentNumber(''); window.localStorage.removeItem('timetable-student-number'); }}>Odstrani</button>}</div><label className="student-number"><b>Admin</b><input type="password" value={adminDraft} onChange={(event) => setAdminDraft(event.target.value)} autoComplete="current-password" placeholder="Geslo za urejanje" /></label>{!adminUnlocked ? <div className="settings-actions"><button onClick={unlockAdmin}>Odpri urejanje</button></div> : <div className="admin-events"><b>Dodaj dogodek</b><input value={customEvent.title} onChange={(event) => setCustomEvent((value) => ({ ...value, title: event.target.value }))} placeholder="Naslov" /><input type="date" value={customEvent.date} onChange={(event) => setCustomEvent((value) => ({ ...value, date: event.target.value }))} /><div><input type="time" value={customEvent.start} onChange={(event) => setCustomEvent((value) => ({ ...value, start: event.target.value }))} /><input type="time" value={customEvent.end} onChange={(event) => setCustomEvent((value) => ({ ...value, end: event.target.value }))} /></div><input value={customEvent.room} onChange={(event) => setCustomEvent((value) => ({ ...value, room: event.target.value }))} placeholder="Lokacija (neobvezno)" /><select value={customEvent.programme} onChange={(event) => setCustomEvent((value) => ({ ...value, programme: event.target.value }))}><option value="all">Vsi letniki</option><option value="1">1. letnik</option><option value="2">2. letnik</option><option value="3">3. letnik</option></select><div className="settings-actions"><button onClick={addCustomEvent}>Dodaj</button></div></div>}{(studentNumberError || adminError) && <p className="settings-error" role="alert">{studentNumberError || adminError}</p>}<small>{studentNumber ? 'Osebni urnik je vključen.' : 'Shranjeno v tej napravi'}</small></div>}</div>
+        <div className="settings-wrap">
+          <button className="icon-button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-label="Nastavitve programa"><Icon name="settings" /></button>
+          {settingsOpen && <div className="settings-menu" role="dialog" aria-label="Nastavitve programa">
+            <span>Program</span>
+            <div className="year-switch" role="group" aria-label="Letnik programa">{['1', '2', '3'].map((year) => <button key={year} className={programmeYear === year ? 'is-selected' : ''} onClick={() => setProgrammeYear(year)} aria-pressed={programmeYear === year}>{year}. letnik</button>)}</div>
+            <label className="student-number"><b>Vpisna številka</b><input value={studentNumberDraft} onChange={(event) => setStudentNumberDraft(event.target.value.replace(/\D/g, ''))} inputMode="numeric" autoComplete="off" placeholder="Za osebni urnik" /><small>Izbere tvojo FRI skupino pri prekrivanju vaj.</small></label>
+            <div className="settings-actions"><button onClick={saveStudentNumber}>Shrani</button>{studentNumber && <button onClick={() => { setStudentNumberDraft(''); setStudentNumber(''); window.localStorage.removeItem('timetable-student-number'); }}>Odstrani</button>}</div>
+            <label className="student-number"><b>Admin</b><input type="password" value={adminDraft} onChange={(event) => setAdminDraft(event.target.value)} autoComplete="current-password" placeholder="Geslo za urejanje" /></label>
+            {!adminUnlocked ? <div className="settings-actions"><button onClick={unlockAdmin}>Odpri urejanje</button></div> : <p className="admin-unlocked">Urejanje je odklenjeno. Dodaj dogodek z gumbom + spodaj.</p>}
+            {(studentNumberError || adminError) && <p className="settings-error" role="alert">{studentNumberError || adminError}</p>}
+            <small>{studentNumber ? 'Osebni urnik je vključen.' : 'Shranjeno v tej napravi'}</small>
+          </div>}
+        </div>
         <button className="icon-button" onClick={() => load(true)} disabled={loading} aria-label="Osveži urnik"><Icon name="refresh" /></button>
       </div>
     </header>
@@ -433,10 +524,14 @@ function App() {
     </section>
     </div>
 
-    {selectedEvent && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setSelectedEvent(null)}><section className={`lesson-dialog lesson-dialog--${selectedEvent.source.toLowerCase()}`} role="dialog" aria-modal="true" aria-label={`Podrobnosti: ${selectedEvent.title}`} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>{selectedEvent.source}</b><i>{selectedEvent.source === 'FRI' ? 'Računalništvo in informatika' : 'Matematika in fizika'}</i></span><span className="lesson-type">{selectedEvent.type}</span><h2>{selectedEvent.title}</h2></div><button className="lesson-close" onClick={() => setSelectedEvent(null)} aria-label="Zapri podrobnosti"><Icon name="close" size={18} /></button></header><div className="lesson-details"><div><b>Termin</b><span>{new Intl.DateTimeFormat('sl-SI', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${selectedEvent.date}T12:00:00`))}</span><strong>{selectedEvent.start}–{selectedEvent.end}</strong></div><div><b>Prostor</b><strong>{selectedEvent.room || 'Ni podatka'}</strong></div><div><b>Izvajalec</b><strong>{selectedEvent.teacher || 'Ni podatka'}</strong></div></div></section></div>}
+    {selectedEvent && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setSelectedEvent(null)}><section className={`lesson-dialog lesson-dialog--${selectedEvent.source.toLowerCase()}`} role="dialog" aria-modal="true" aria-label={`Podrobnosti: ${selectedEvent.title}`} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>{selectedEvent.source}</b><i>{selectedEvent.source === 'FRI' ? 'Računalništvo in informatika' : selectedEvent.source === 'FMF' ? 'Matematika in fizika' : 'Skupni dogodek'}</i></span><span className="lesson-type">{selectedEvent.type}</span><h2>{selectedEvent.title}</h2></div><button className="lesson-close" onClick={() => setSelectedEvent(null)} aria-label="Zapri podrobnosti"><Icon name="close" size={18} /></button></header><div className="lesson-details"><div><b>Termin</b><span>{new Intl.DateTimeFormat('sl-SI', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${selectedEvent.date}T12:00:00`))}</span><strong>{selectedEvent.start}–{selectedEvent.end}</strong></div><div><b>Prostor</b><strong>{selectedEvent.room || 'Ni podatka'}</strong></div><div><b>Izvajalec</b><strong>{selectedEvent.teacher || 'Ni podatka'}</strong></div></div></section></div>}
+
+    {adminUnlocked && <button className="event-fab" onClick={openEventComposer} aria-label="Dodaj dogodek"><Icon name="plus" size={21} /><span>Dodaj</span></button>}
+    {eventComposerOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setEventComposerOpen(false)}><section className="lesson-dialog event-composer" role="dialog" aria-modal="true" aria-labelledby="event-composer-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>{programmeYear}. letnik</i></span><h2 id="event-composer-title">Dodaj dogodek</h2></div><button className="lesson-close" onClick={() => setEventComposerOpen(false)} aria-label="Zapri dodajanje dogodka"><Icon name="close" size={18} /></button></header><p>Dogodek bo viden celotnemu {programmeYear}. letniku v prikazanem tednu.</p><form onSubmit={addCustomEvent}><label><b>Naslov</b><input value={customEvent.title} onChange={(event) => setCustomEvent((value) => ({ ...value, title: event.target.value }))} placeholder="Npr. Izpit" autoFocus required /></label><label><b>Datum</b><input type="date" value={customEvent.date} onChange={(event) => setCustomEvent((value) => ({ ...value, date: event.target.value }))} required /></label><div className="event-composer__times"><label><b>Začetek</b><input type="time" value={customEvent.start} onChange={(event) => setCustomEvent((value) => ({ ...value, start: event.target.value }))} required /></label><label><b>Konec</b><input type="time" value={customEvent.end} onChange={(event) => setCustomEvent((value) => ({ ...value, end: event.target.value }))} required /></label></div><label><b>Lokacija <small>neobvezno</small></b><input value={customEvent.room} onChange={(event) => setCustomEvent((value) => ({ ...value, room: event.target.value }))} placeholder="Npr. P.01" /></label>{adminError && <p className="settings-error" role="alert">{adminError}</p>}<div className="event-composer__actions"><button type="button" onClick={() => setEventComposerOpen(false)}>Prekliči</button><button type="submit">Dodaj dogodek</button></div></form></section></div>}
 
     <footer className="footer"><span>IŠRM · FRI × FMF</span><a href="/privacy">Zasebnost</a><div className="source-statuses">{['FRI', 'FMF'].map((source) => <span key={source} className={data?.sources?.[source]?.ok ? 'ok' : 'warning'}><b />{source}</span>)}</div></footer>
-    {installPrompt && !installDismissed && <aside className="install-banner" aria-label="Namestitev aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>Dodaj urnik na začetni zaslon za hitrejši dostop.</p></div><button className="install-banner__action" onClick={install}><Icon name="download" size={16} />Namesti</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
+    {isAndroidDevice() && androidRelease?.androidApkUrl && !installDismissed && <aside className="install-banner android-install-banner" aria-label="Prenos Android aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM za Android</strong><p>Native aplikacija {androidRelease.androidVersion} z delovanjem brez povezave in pripomočki.</p></div><a className="install-banner__action" href={androidRelease.androidApkUrl}><Icon name="download" size={16} />Prenesi</a><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
+    {!androidRelease?.androidApkUrl && installPrompt && !installDismissed && <aside className="install-banner" aria-label="Namestitev aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>Dodaj urnik na začetni zaslon za hitrejši dostop.</p></div><button className="install-banner__action" onClick={install}><Icon name="download" size={16} />Namesti</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
   </main>;
 }
 
