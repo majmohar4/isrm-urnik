@@ -3,3 +3,6 @@ dist
 .git
 data
 .env
+android/.gradle
+android/.kotlin
+android/app/build

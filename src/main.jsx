@@ -13,6 +13,13 @@ if ('serviceWorker' in navigator) {
     window.location.reload();
   });
 
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type !== 'ISRM_UPDATED' || reloadingForUpdate) return;
+    reloadingForUpdate = true;
+    window.sessionStorage.setItem('isrm-pwa-updated', '1');
+    window.location.reload();
+  });
+
   window.addEventListener('load', async () => {
     try {
       const registration = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' });

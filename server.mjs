@@ -50,6 +50,8 @@ const NTFY_SERVER = (process.env.NTFY_SERVER || 'https://ntfy.majmohar.eu').repl
 const NTFY_TOPIC = process.env.NTFY_TOPIC || 'isrm-alerts';
 const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
 const APP_VERSION = process.env.APP_VERSION || 'unversioned';
+const ANDROID_APP_VERSION = process.env.ANDROID_APP_VERSION || '1.0';
+const ANDROID_APK_URL = process.env.ANDROID_APK_URL || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const DIST = join(process.cwd(), 'dist');
 const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
@@ -214,6 +216,16 @@ function personalFriUrl(programme, student) {
   source.search = '';
   source.searchParams.set('student', student);
   return source.toString();
+}
+
+async function detectStudentProgramme(student) {
+  // The FRI personal allocation page exposes group names such as 2_BUN-RM.
+  // Its leading year is the same programme-year selector used by this app.
+  const html = await fetchText('FRI-student-programme', personalFriUrl('1', student));
+  const matches = [...html.matchAll(/(?:^|[^A-Z0-9])([1-3])_BUN(?:[^A-Z0-9]|$)/gi)];
+  const programme = matches.map((match) => match[1]).find((year) => Object.hasOwn(PROGRAMMES, year));
+  if (!programme) throw new Error('Letnika vpisne številke ni bilo mogoče prepoznati.');
+  return programme;
 }
 
 async function sendNtfyNotification({ title, tags, body, timeoutMs = 10_000 }) {
@@ -551,6 +563,15 @@ function preloadWeekKeys() {
   return Array.from({ length: PRELOAD_WEEKS }, (_, index) => isoDate(addDays(start, index * 7)));
 }
 
+function monthWeekKeys(monthValue) {
+  const [year, month] = monthValue.split('-').map(Number);
+  const first = new Date(year, month - 1, 1, 12);
+  const last = new Date(year, month, 0, 12);
+  const keys = [];
+  for (let cursor = monday(first); cursor <= last; cursor = addDays(cursor, 7)) keys.push(isoDate(cursor));
+  return keys;
+}
+
 async function preloadUpcomingWeeks() {
   if (preloadState.running) return;
   preloadState.running = true;
@@ -650,6 +671,42 @@ const server = createServer(async (request, response) => {
     } catch (error) { return sendJson(response, { error: error.message || 'Neveljavna zahteva.' }, 400); }
   }
   if (request.method !== 'GET') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
+  if (url.pathname === '/api/release') return sendJson(response, { androidVersion: ANDROID_APP_VERSION, androidApkUrl: ANDROID_APK_URL });
+  if (url.pathname === '/api/student-programme') {
+    const student = studentNumber(url.searchParams.get('student'));
+    if (!student) return sendJson(response, { error: 'Neveljavna vpisna številka.' }, 400);
+    try {
+      const programme = await detectStudentProgramme(student);
+      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label });
+    } catch {
+      return sendJson(response, { error: 'Letnika za to vpisno številko ni bilo mogoče prepoznati.' }, 422);
+    }
+  }
+  if (url.pathname === '/api/month') {
+    const month = url.searchParams.get('month');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month || '')) return sendJson(response, { error: 'Neveljaven mesec.' }, 400);
+    const programme = programmeId(url.searchParams.get('programme'));
+    const studentParam = url.searchParams.get('student');
+    const student = studentNumber(studentParam);
+    if (studentParam && !student) return sendJson(response, { error: 'Neveljavna vpisna številka.' }, 400);
+    const stored = programmeCache(programme);
+    const weekKeys = monthWeekKeys(month);
+    try {
+      // Cached weeks are returned immediately. Missing future weeks are filled
+      // in behind the response instead of delaying the mobile month view.
+      if (!Object.values(stored.weeks).some((week) => week?.events?.length)) await refreshWeek(programme, weekKeys[0]);
+      const weeks = await Promise.all(weekKeys.map(async (weekKey) => {
+        const cachedWeek = stored.weeks[weekKey];
+        if (!cachedWeek) { queueRecheck(programme, weekKey); return []; }
+        queueRecheck(programme, weekKey);
+        const baseEvents = student ? (await personalizedWeek(programme, weekKey, student)).events : cachedWeek.events;
+        return customEventsFor(programme, weekKey, baseEvents);
+      }));
+      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, month, events: weeks.flat(), cached: true });
+    } catch {
+      return sendJson(response, { error: 'Mesečnega urnika trenutno ni mogoče pripraviti.', events: [] }, 503);
+    }
+  }
   if (url.pathname === '/api/timetable') {
     const programme = programmeId(url.searchParams.get('programme'));
     const studentParam = url.searchParams.get('student');

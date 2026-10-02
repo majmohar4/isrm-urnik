@@ -143,15 +143,35 @@ function WholeWeek({ events, weekDays, onEventSelect }) {
   </div>;
 }
 
-function MonthView({ events, month, onEventSelect }) {
+function MonthView({ events, month, onEventSelect, onDaySelect }) {
   const weeks = monthWeekStarts(month);
+  const eventsByDay = useMemo(() => events.reduce((days, event) => {
+    (days[event.date] ||= []).push(event);
+    return days;
+  }, {}), [events]);
   return <div className="month-view" aria-label="Mesečni urnik"><header>{FULL_DAY_NAMES.map((day) => <b key={day}>{day.slice(0, 3)}</b>)}</header><div className="month-grid">{weeks.flatMap((week) => Array.from({ length: 5 }, (_, index) => {
     const day = plusDays(week, index); const key = dateKey(day); const isCurrentMonth = day.getMonth() === month.getMonth();
-    return <section className={isCurrentMonth ? '' : 'is-outside'} key={key}><time>{day.getDate()}</time>{events.filter((event) => event.date === key).map((event) => <button key={event.id} className={`month-event month-event--${event.source.toLowerCase()}`} onClick={() => onEventSelect(event)}><span>{event.start}</span>{event.title}</button>)}</section>;
+    return <section className={isCurrentMonth ? '' : 'is-outside'} key={key}><button className="month-day-jump" onClick={() => onDaySelect(day)} aria-label={`Odpri ${formatDate(day)}`}><time>{day.getDate()}</time></button>{(eventsByDay[key] || []).map((event) => <button key={event.id} className={`month-event month-event--${event.source.toLowerCase()}`} onClick={() => onEventSelect(event)}><span>{event.start}</span>{event.title}</button>)}</section>;
   }))}</div></div>;
 }
 
+function PrivacyPolicy() {
+  return <main className="privacy-page">
+    <a className="privacy-back" href="/">Nazaj na urnik</a>
+    <p className="privacy-kicker">IŠRM · FRI program</p>
+    <h1>Politika zasebnosti</h1>
+    <p className="privacy-lead">IŠRM je namenjen prikazu urnika. Ne uporablja računov, oglasov, analitike ali sledilnikov.</p>
+    <section><h2>Podatki v tej napravi</h2><p>Izbrani letnik, videz, zadnji pogled in po želji vpisna številka se shranijo samo v lokalno shrambo tvoje naprave. Vpisno številko lahko kadarkoli odstraniš v nastavitvah.</p></section>
+    <section><h2>Osebni urnik</h2><p>Ko vključiš osebni urnik, aplikacija pošlje vpisno številko samo uradnemu strežniku urnikov FRI, da izbere tvojo skupino vaj. IŠRM je ne prodaja, ne uporablja za profiliranje in je ne zapisuje v svoj urnik-cache.</p></section>
+    <section><h2>Strežnik in koledar</h2><p>Strežnik začasno hrani javne podatke urnika, da je prikaz hiter. Naročniška povezava .ics lahko vsebuje vpisno številko v naslovu, zato jo deli samo z aplikacijami, ki jim zaupaš.</p></section>
+    <section><h2>Android aplikacija in pripomočki</h2><p>Android aplikacija ne zahteva dostopa do lokacije, stikov, kamer, datotek ali obvestil. Uporablja le omrežje in običajna Androidova dovoljenja za načrtovano osveževanje pripomočka. Za pripomoček shrani samo njegov način prikaza, izbrani letnik in neobvezno vpisno številko v lokalno shrambo aplikacije. Pripomoček bere urnik prek povezave, ki jo nastaviš.</p></section>
+    <section><h2>Operativna obvestila</h2><p>Če upravitelj vključi ntfy, se tja pošiljajo le tehnična obvestila o zagonu, ustavitvi in dosegljivosti virov—ne osebne vpisne številke.</p></section>
+    <p className="privacy-updated">Zadnja posodobitev: 2. oktober 2026.</p>
+  </main>;
+}
+
 function App() {
+  if (window.location.pathname === '/privacy') return <PrivacyPolicy />;
   const [weekStart, setWeekStart] = useState(weekFromLocation);
   const [data, setData] = useState(null);
   const [monthEvents, setMonthEvents] = useState([]);
@@ -208,13 +228,11 @@ function App() {
   useEffect(() => {
     if (viewMode !== 'month') return;
     let cancelled = false;
-    const weeks = monthWeekStarts(weekStart);
-    Promise.all(weeks.map(async (start) => {
-      const key = dateKey(start);
-      const response = await fetch(`/api/timetable?week=${key}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`);
-      const payload = await response.json();
-      return payload.events || [];
-    })).then((all) => { if (!cancelled) setMonthEvents(all.flat()); }).catch(() => { if (!cancelled) setMonthEvents([]); });
+    const monthKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}`;
+    fetch(`/api/month?month=${monthKey}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`)
+      .then(async (response) => ({ response, payload: await response.json() }))
+      .then(({ response, payload }) => { if (!cancelled) setMonthEvents(response.ok ? payload.events || [] : []); })
+      .catch(() => { if (!cancelled) setMonthEvents([]); });
     return () => { cancelled = true; };
   }, [viewMode, weekKey, programmeYear, studentNumber]);
   useEffect(() => { weekRef.current = weekStart; }, [weekStart]);
@@ -247,7 +265,7 @@ function App() {
     let active = false;
     const reset = () => { startY = null; startX = null; distance = 0; active = false; setPullDistance(0); };
     const onStart = (event) => {
-      if (refreshingRef.current || window.scrollY > 0 || event.touches.length !== 1) return;
+      if (refreshingRef.current || window.scrollY > 0 || event.touches.length !== 1 || !event.target.closest('.schedule')) return;
       startY = event.touches[0].clientY;
       startX = event.touches[0].clientX;
       active = true;
@@ -336,13 +354,27 @@ function App() {
     try { await navigator.clipboard.writeText(subscriptionUrl); setCopyStatus('Povezava kopirana'); }
     catch { setCopyStatus('Kopiranje ni uspelo'); }
   };
-  const saveStudentNumber = () => {
+  const saveStudentNumber = async () => {
     const next = studentNumberDraft.trim();
     if (next && !/^\d{6,16}$/.test(next)) { setStudentNumberError('Vnesi številko z 6–16 števkami.'); return; }
-    setStudentNumberError('');
-    setStudentNumber(next);
-    if (next) window.localStorage.setItem('timetable-student-number', next);
-    else window.localStorage.removeItem('timetable-student-number');
+    if (!next) { setStudentNumberError(''); setStudentNumber(''); window.localStorage.removeItem('timetable-student-number'); return; }
+    try {
+      setStudentNumberError('Preverjam letnik …');
+      const response = await fetch(`/api/student-programme?student=${encodeURIComponent(next)}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Letnika ni bilo mogoče prepoznati.');
+      setProgrammeYear(payload.programme);
+      setStudentNumber(next);
+      window.localStorage.setItem('timetable-student-number', next);
+      window.localStorage.setItem('timetable-programme-year', payload.programme);
+      setStudentNumberError(`Izbran je ${payload.programmeLabel}. letnik.`);
+    } catch (requestError) { setStudentNumberError(requestError.message || 'Letnika ni bilo mogoče prepoznati.'); }
+  };
+  const openMonthDay = (day) => {
+    const nextWeek = monday(day);
+    setTimelineDayIndex(Math.max(0, Math.min(4, day.getDay() - 1)));
+    setViewMode('timeline');
+    navigateWeek(nextWeek, nextWeek < weekStart ? 'back' : 'forward');
   };
   const adminRequest = async (path, body) => {
     const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-isrm-admin-password': adminDraft || adminPassword }, body: JSON.stringify(body || {}) });
@@ -373,7 +405,7 @@ function App() {
       </div>
     </header>
 
-    <div key={`${weekKey}-${navigationKey}`} className={`week-content week-content--${navigationDirection}`}>
+    <div>
     <div className="week-control-row">
     <section className="week-control" aria-label="Izbira tedna">
       <button className="week-arrow" onClick={previousWeek} aria-label="Prejšnji teden"><Icon name="arrowLeft" /></button>
@@ -385,11 +417,11 @@ function App() {
 
     {(error || sourceIssues.length > 0) && <div className="notice" role="status">{error || `Pozor: ${sourceIssues.map(([source, status]) => `${source} (${status.message || 'vir ni dosegljiv'})`).join('; ')}. Prikazani so zadnji uspešno shranjeni podatki.`}</div>}
 
-    <section className="schedule" aria-label="Tedenski urnik">
+    <section key={`${weekKey}-${navigationKey}`} className={`schedule week-content week-content--${navigationDirection}`} aria-label="Tedenski urnik">
       <div className="schedule__heading"><h2>Urnik</h2><div><span>{events.length} {events.length === 1 ? 'obveznost' : 'obveznosti'}</span><div className="view-modes" role="group" aria-label="Prikaz urnika"><button className={viewMode === 'agenda' ? 'is-selected' : ''} onClick={() => setViewMode('agenda')} aria-pressed={viewMode === 'agenda'}>Seznam</button><button className={viewMode === 'timeline' ? 'is-selected' : ''} onClick={() => setViewMode('timeline')} aria-pressed={viewMode === 'timeline'}>Časovni</button><button className={viewMode === 'week' ? 'is-selected' : ''} onClick={() => setViewMode('week')} aria-pressed={viewMode === 'week'}>Teden</button><button className={viewMode === 'month' ? 'is-selected' : ''} onClick={() => setViewMode('month')} aria-pressed={viewMode === 'month'}>Mesec</button></div></div></div>
       {viewMode === 'agenda' && <div className="weekday-tabs">{weekDays.map((day, index) => <a key={dateKey(day)} href={`#day-${index}`} className={dateKey(day) === todayKey ? 'is-today' : ''}><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></a>)}</div>}
       {viewMode === 'timeline' && <div className="timeline-day-switch" role="group" aria-label="Dan v časovnem pogledu">{weekDays.map((day, index) => <button key={dateKey(day)} className={timelineDayIndex === index ? 'is-selected' : ''} onClick={() => setTimelineDayIndex(index)} aria-pressed={timelineDayIndex === index}><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></button>)}</div>}
-      {loading && !data ? <div className="schedule-skeleton">{Array.from({ length: 5 }, (_, index) => <span key={index} />)}</div> : viewMode === 'timeline' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="day" mobileDayIndex={timelineDayIndex} /> : viewMode === 'week' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="week" /> : viewMode === 'month' ? <MonthView events={monthEvents} month={weekStart} onEventSelect={setSelectedEvent} /> : <div className="agenda">
+      {loading && !data ? <div className="schedule-skeleton">{Array.from({ length: 5 }, (_, index) => <span key={index} />)}</div> : viewMode === 'timeline' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="day" mobileDayIndex={timelineDayIndex} /> : viewMode === 'week' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="week" /> : viewMode === 'month' ? <MonthView events={monthEvents} month={weekStart} onEventSelect={setSelectedEvent} onDaySelect={openMonthDay} /> : <div className="agenda">
         {weekDays.map((day, index) => {
           const dayEvents = events.filter((event) => event.date === dateKey(day));
           return <section className="agenda-day" id={`day-${index}`} key={dateKey(day)}>
@@ -403,7 +435,7 @@ function App() {
 
     {selectedEvent && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setSelectedEvent(null)}><section className={`lesson-dialog lesson-dialog--${selectedEvent.source.toLowerCase()}`} role="dialog" aria-modal="true" aria-label={`Podrobnosti: ${selectedEvent.title}`} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>{selectedEvent.source}</b><i>{selectedEvent.source === 'FRI' ? 'Računalništvo in informatika' : 'Matematika in fizika'}</i></span><span className="lesson-type">{selectedEvent.type}</span><h2>{selectedEvent.title}</h2></div><button className="lesson-close" onClick={() => setSelectedEvent(null)} aria-label="Zapri podrobnosti"><Icon name="close" size={18} /></button></header><div className="lesson-details"><div><b>Termin</b><span>{new Intl.DateTimeFormat('sl-SI', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${selectedEvent.date}T12:00:00`))}</span><strong>{selectedEvent.start}–{selectedEvent.end}</strong></div><div><b>Prostor</b><strong>{selectedEvent.room || 'Ni podatka'}</strong></div><div><b>Izvajalec</b><strong>{selectedEvent.teacher || 'Ni podatka'}</strong></div></div></section></div>}
 
-    <footer className="footer"><span>IŠRM · FRI × FMF</span><div className="source-statuses">{['FRI', 'FMF'].map((source) => <span key={source} className={data?.sources?.[source]?.ok ? 'ok' : 'warning'}><b />{source}</span>)}</div></footer>
+    <footer className="footer"><span>IŠRM · FRI × FMF</span><a href="/privacy">Zasebnost</a><div className="source-statuses">{['FRI', 'FMF'].map((source) => <span key={source} className={data?.sources?.[source]?.ok ? 'ok' : 'warning'}><b />{source}</span>)}</div></footer>
     {installPrompt && !installDismissed && <aside className="install-banner" aria-label="Namestitev aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>Dodaj urnik na začetni zaslon za hitrejši dostop.</p></div><button className="install-banner__action" onClick={install}><Icon name="download" size={16} />Namesti</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
   </main>;
 }
