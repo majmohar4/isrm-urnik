@@ -56,7 +56,7 @@ The scraper deliberately does not try to evade rate limits. FRI is fetched once 
 
 If a source returns a page without its known timetable container, changes status, or becomes rate-limited, the source status at the bottom of the app switches to a warning and the message is shown at the top. `GET /health` returns HTTP 503 with the affected source names when a source is failing, which is appropriate for uptime monitors; `/live` is the container liveness endpoint. ntfy is called only when a source changes between healthy and unhealthy (or recovers).
 
-The service also posts a startup alert after every deploy/restart and a best-effort alert before it stops on `SIGTERM` or `SIGINT`. Set `APP_VERSION` in `.env` to a release name (for example `2026.09.30`) and it will be included in both lifecycle messages. The container has a 15-second graceful stop window so the shutdown message can be sent without delaying shutdown unnecessarily.
+The service also posts a startup alert after every deploy/restart and a best-effort alert before it stops on `SIGTERM` or `SIGINT`. `APP_VERSION` in `.env` defaults to the current release and is included in both lifecycle messages. Bump it alongside [src/version.js](src/version.js) for later releases. The container has a 15-second graceful stop window so the shutdown message can be sent without delaying shutdown unnecessarily.
 
 ## Source adapters
 

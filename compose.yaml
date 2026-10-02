@@ -26,7 +26,7 @@ services:
       NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.majmohar.eu}
       NTFY_TOPIC: ${NTFY_TOPIC:-isrm-alerts}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
-      APP_VERSION: ${APP_VERSION:-unversioned}
+      APP_VERSION: ${APP_VERSION:-1.1}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       TRUST_PROXY: "true"
     volumes:
