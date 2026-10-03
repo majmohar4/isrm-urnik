@@ -54,13 +54,15 @@ class MainActivity : AppCompatActivity() {
     private var week = LocalDate.now().with(DayOfWeek.MONDAY)
     private var monthAnchor = LocalDate.now().withDayOfMonth(1)
     private var timelineDayIndex = (LocalDate.now().dayOfWeek.value - 1).coerceIn(0, 4)
-    private var mode = ViewMode.entries.firstOrNull { it.name == prefs.getString("view", ViewMode.AGENDA.name) } ?: ViewMode.AGENDA
+    private var mode = ViewMode.AGENDA
     private var weekEvents: List<Lesson> = emptyList()
     private var monthEvents: List<Lesson> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // Preferences need an attached Context, so the saved view is read here rather than in a field initializer.
+        mode = ViewMode.entries.firstOrNull { it.name == prefs.getString("view", ViewMode.AGENDA.name) } ?: ViewMode.AGENDA
         repo = TimetableRepository(this)
         content = findViewById(R.id.content)
         loading = findViewById(R.id.loading)
