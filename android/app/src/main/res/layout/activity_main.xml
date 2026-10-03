@@ -132,6 +132,20 @@
                 android:src="@drawable/ic_refresh"
                 android:tint="@color/muted" />
         </LinearLayout>
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:clipToPadding="false"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/view_modes"
+                android:layout_width="wrap_content"
+                android:layout_height="42dp"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
         <TextView
             android:id="@+id/status"
             android:layout_width="match_parent"
@@ -152,10 +166,9 @@
             <View android:layout_width="match_parent" android:layout_height="92dp" android:layout_marginTop="10dp" android:background="@drawable/skeleton_surface" />
             <View android:layout_width="match_parent" android:layout_height="92dp" android:layout_marginTop="10dp" android:background="@drawable/skeleton_surface" />
         </LinearLayout>
-        <LinearLayout
-            android:id="@+id/lessons"
+        <FrameLayout
+            android:id="@+id/content"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical" />
+            android:layout_height="wrap_content" />
     </LinearLayout>
 </ScrollView>
