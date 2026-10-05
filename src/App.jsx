@@ -80,7 +80,6 @@ function firstWeekOfMonth(year, monthIndex) {
 }
 
 const PAGE_GAP = 24;
-const isNarrow = () => window.matchMedia('(max-width: 720px)').matches;
 
 function formatDate(date) {
   return new Intl.DateTimeFormat('sl-SI', { day: 'numeric', month: 'short' }).format(date).replace('.', '');
@@ -220,7 +219,7 @@ function layoutTimelineEvents(events) {
 
 function Timeline({ events, weekDays, onEventSelect, mode = 'week', mobileDayIndex = 0 }) {
   const hours = Array.from({ length: 14 }, (_, index) => index + 7);
-  return <div className={`timeline-scroll timeline-scroll--${mode}`} aria-label={mode === 'day' ? 'Časovni dnevni urnik' : 'Časovni tedenski urnik'}>
+  return <div className={`timeline-scroll timeline-scroll--${mode}`} aria-label={mode === 'day' ? 'Dnevni urnik' : 'Tedenski urnik'}>
     <div className="timeline">
       <div className="timeline__hours">{hours.map((hour) => <span key={hour} style={{ top: `${(hour - 7) * 60}px` }}>{String(hour).padStart(2, '0')}:00</span>)}</div>
       <div className="timeline__days">
@@ -327,7 +326,7 @@ function App() {
   const [installGuideOpen, setInstallGuideOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [viewMode, setViewMode] = useState(() => window.localStorage.getItem('timetable-view') || 'agenda');
-  // Mon–Fri only: on weekends Časovni opens on Monday of the coming week (getDay() - 1 used to give 5 on Saturday, an empty page).
+  // Mon–Fri only: on weekends Dan opens on Monday of the coming week (getDay() - 1 used to give 5 on Saturday, an empty page).
   const [timelineDayIndex, setTimelineDayIndex] = useState(() => { const day = new Date().getDay(); return day === 0 || day === 6 ? 0 : day - 1; });
   // 'system' follows the device, like the Android app; 'light' and 'dark' are fixed choices.
   const [theme, setTheme] = useState(() => window.localStorage.getItem('timetable-theme') || 'system');
@@ -495,8 +494,8 @@ function App() {
     let horizontal = false;
     let samples = [];
     const reset = () => { startY = null; startX = null; distance = 0; active = false; canPull = false; horizontal = false; samples = []; setPullDistance(0); };
-    // In Časovni on a phone only the day turns, until the swipe would leave the week.
-    const dayLevel = (forward) => { const { viewMode: mode, timelineDayIndex: index, dayCount } = liveRef.current; return mode === 'timeline' && isNarrow() && (forward ? index < dayCount - 1 : index > 0); };
+    // In Dan only the day turns, until the swipe would leave the week.
+    const dayLevel = (forward) => { const { viewMode: mode, timelineDayIndex: index, dayCount } = liveRef.current; return mode === 'timeline' && (forward ? index < dayCount - 1 : index > 0); };
     const onStart = (event) => {
       if (refreshingRef.current || turningRef.current || event.touches.length !== 1 || !event.target.closest('.schedule') || event.target.closest('.view-modes')) return;
       startY = event.touches[0].clientY;
@@ -818,7 +817,7 @@ function App() {
     {(error || sourceIssues.length > 0) && <div className="notice" role="status">{error || `Pozor: ${sourceIssues.map(([source, status]) => `${source} (${status.message || 'vir ni dosegljiv'})`).join('; ')}. Prikazani so zadnji uspešno shranjeni podatki.`}</div>}
 
     <section className="schedule" aria-label="Tedenski urnik">
-      <div className="schedule__heading"><PillGroup className="view-modes" selected={viewMode} role="group" aria-label="Prikaz urnika">{[['agenda', 'Seznam'], ['timeline', 'Časovni'], ['week', 'Teden'], ['month', 'Mesec']].map(([mode, label]) => <button key={mode} className={viewMode === mode ? 'is-selected' : ''} onClick={() => changeView(mode)} aria-pressed={viewMode === mode}>{label}</button>)}</PillGroup></div>
+      <div className="schedule__heading"><PillGroup className="view-modes" selected={viewMode} role="group" aria-label="Prikaz urnika">{[['agenda', 'Seznam'], ['timeline', 'Dan'], ['week', 'Teden'], ['month', 'Mesec']].map(([mode, label]) => <button key={mode} className={viewMode === mode ? 'is-selected' : ''} onClick={() => changeView(mode)} aria-pressed={viewMode === mode}>{label}</button>)}</PillGroup></div>
       <div ref={pagerRef} className={`pager ${drag ? `is-${drag.phase}` : ''}`}>
         <div key={`${weekKey}-${navigationKey}`} className={`pager__page week-content week-content--${navigationDirection}`} style={drag?.level === 'week' ? { transform: `translateX(${drag.offset}px)`, opacity: drag.phase === 'commit' ? 0.4 : 1 - Math.min(1, Math.abs(drag.offset) / 900) } : undefined}>
           {renderPage({ week: weekStart, days: weekDays, items: events, monthItems: monthEvents, dayIndex: timelineDayIndex, isLoading: loading && !data, live: true })}

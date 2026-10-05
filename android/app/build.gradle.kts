@@ -2,7 +2,10 @@ import java.time.LocalDate
 
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
-val appVersionName = providers.gradleProperty("VERSION_NAME").getOrElse("1.6")
+// One version for website, PWA and app: the default comes from src/version.js (the release script and CI pass it too).
+val sharedVersion = rootProject.file("../src/version.js").takeIf { it.exists() }?.readText()
+    ?.let { Regex("APP_VERSION = '([0-9.]+)'").find(it)?.groupValues?.get(1) } ?: "1.0"
+val appVersionName = providers.gradleProperty("VERSION_NAME").getOrElse(sharedVersion)
 // Same rule as the release workflow: 1.7 -> 10700, 1.7.2 -> 10702, unless VERSION_CODE is given explicitly.
 val appVersionCode = providers.gradleProperty("VERSION_CODE").orNull?.toInt()
     ?: appVersionName.split('.').map { it.toIntOrNull() ?: 0 }.let { it.getOrElse(0) { 0 } * 10000 + it.getOrElse(1) { 0 } * 100 + it.getOrElse(2) { 0 } }

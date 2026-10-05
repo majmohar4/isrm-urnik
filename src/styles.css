@@ -411,3 +411,11 @@ html[data-theme] .skin .install-banner { border: 1px solid var(--edge); color: v
 html[data-theme] .skin .schedule__heading > div { flex-direction: row; align-items: center; width: auto; }
 html[data-theme] .skin .view-modes button { flex: none; width: auto; }
 html[data-theme] .skin .lesson-faculty { padding: 0; border: 0; border-radius: 0; background: none; }
+/* Časovni is a one-day view at every width, like the app (Teden is the whole-week grid), so its day buttons always show. */
+html[data-theme] .skin .timeline-day-switch { grid-template-columns: repeat(var(--days, 5), 1fr); }
+html[data-theme] .skin .timeline-scroll--day .timeline__days { display: block; }
+html[data-theme] .skin .timeline-scroll--day .timeline-day { display: none; border-right: 0; }
+html[data-theme] .skin .timeline-scroll--day .timeline-day.is-mobile-active { display: block; }
+/* The week grid fits the app-width column: no fixed minimum width, no sideways scroll on laptops. */
+html[data-theme] .skin .timeline { grid-template-columns: 48px minmax(0, 1fr); min-width: 0; border: 0; border-radius: 0; background: none; }
+html[data-theme] .skin .timeline-scroll { overflow-x: hidden; padding-bottom: 0; }

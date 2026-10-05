@@ -69,7 +69,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
-    private enum class ViewMode(val title: String) { AGENDA("Seznam"), TIMELINE("Časovni"), WEEK("Teden"), MONTH("Mesec") }
+    private enum class ViewMode(val title: String) { AGENDA("Seznam"), TIMELINE("Dan"), WEEK("Teden"), MONTH("Mesec") }
     private data class TimedLesson(val lesson: Lesson, val start: Int, val end: Int, val column: Int, val columns: Int)
 
     // Network work is serialised so a slow week cannot overwrite a newer one; preloading gets its own thread so it never delays navigation.
@@ -101,7 +101,7 @@ class MainActivity : AppCompatActivity() {
     private var downY = 0f
     private var tracking = false
     private var dragging = false
-    // Časovni keeps its day buttons still while only the day below them changes, so both parts are kept to animate separately.
+    // Dan keeps its day buttons still while only the day below them changes, so both parts are kept to animate separately.
     private var timelineChips: LinearLayout? = null
     private var timelineBody: FrameLayout? = null
     private var week = thisMonday()
@@ -302,7 +302,7 @@ class MainActivity : AppCompatActivity() {
     private val pagerSprings = mutableListOf<SpringAnimation>()
 
     /**
-     * Horizontal drags turn the page like a pager: the neighbouring week (or day in Časovni) is built from the cache
+     * Horizontal drags turn the page like a pager: the neighbouring week (or day in Dan) is built from the cache
      * and sits beside the current one, both following the finger 1:1. A short flick is enough; release finishes with a
      * spring that starts at the finger's velocity. Vertical drags stay with scrolling and pull-to-refresh, and once a
      * drag is claimed the children get ACTION_CANCEL so a lesson under the finger does not also open.
@@ -675,7 +675,7 @@ class MainActivity : AppCompatActivity() {
         post { getChildAt(0).layoutParams = FrameLayout.LayoutParams((width * done).roundToInt(), MATCH); getChildAt(0).requestLayout() }
     }
 
-    // ---- Časovni (one day on a time axis) ----
+    // ---- Dan (one day on a time axis) ----
 
     private fun timelineView(items: List<Lesson>) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL

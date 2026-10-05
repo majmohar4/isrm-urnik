@@ -30,6 +30,10 @@ ANDROID_APK_URL=https://github.com/majmohar4/isrm-urnik/releases/download/v1.1/I
 ANDROID_RELEASE_URL=https://isrm.majmohar.eu/android
 ```
 
+### One-step release
+
+`tool/release.sh` does the whole self-hosted release: `web` bumps the website/PWA version and service-worker cache and deploys; `app "note|note"` bumps the Android version, builds the signed APK, uploads it and offers it in-app; `all` does both; `deploy` only ships the current code. It verifies the live site and the `/download` APK afterwards. Commit and push yourself afterwards.
+
 ### Self-hosted APK
 
 The server can also serve the APK itself, without a GitHub Release. Build it signed with the same keystore as the GitHub workflow (otherwise it cannot install over existing copies):
@@ -42,8 +46,8 @@ The server can also serve the APK itself, without a GitHub Release. Build it sig
 Copy `app/build/outputs/distribution/IŠRM-1.6.apk` to the server as `releases/ISRM-1.6.apk` (ASCII name; the folder is mounted read-only into the container by `compose.yaml` and is ignored by git and Docker). It is then served at `/downloads/ISRM-1.6.apk`. Point `.env` at it and recreate the container (`docker compose up -d --build --force-recreate`):
 
 ```env
-ANDROID_APP_VERSION=2.3
-ANDROID_APK_URL=https://isrm.majmohar.eu/downloads/ISRM-2.3.apk?build=20300-20261005
+ANDROID_APP_VERSION=2.4
+ANDROID_APK_URL=https://isrm.majmohar.eu/downloads/ISRM-2.4.apk?build=20400-20261005
 ```
 
 The `?build=` tag is ignored by the server but changes the URL, so a rebuilt APK under the same file name never reaches users from a stale Cloudflare copy. Change it whenever the file is replaced.

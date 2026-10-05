@@ -1,2 +1,2 @@
 // Bump this value for every user-visible release.
-export const APP_VERSION = '2.4';
+export const APP_VERSION = '3.0';
