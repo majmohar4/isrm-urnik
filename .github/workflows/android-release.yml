@@ -10,8 +10,8 @@ on:
         description: 'Version without the v prefix, for example 1.1'
         required: true
       version_code:
-        description: 'Increasing Android version code'
-        required: true
+        description: 'Increasing Android version code (leave empty to derive it from the version)'
+        required: false
 
 permissions:
   contents: write
@@ -34,7 +34,9 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           VERSION="${INPUT_VERSION:-${TAG_NAME#v}}"
-          VERSION_CODE="${INPUT_VERSION_CODE:-$RUN_NUMBER}"
+          # Derived from the version (1.7 -> 10700, 1.7.2 -> 10702) so CI and self-hosted builds always agree and increase.
+          DERIVED_CODE=$(echo "$VERSION" | awk -F. '{ printf "%d", $1 * 10000 + $2 * 100 + $3 }')
+          VERSION_CODE="${INPUT_VERSION_CODE:-$DERIVED_CODE}"
           test -n "$VERSION"
           test -n "$VERSION_CODE"
           echo "name=$VERSION" >> "$GITHUB_OUTPUT"

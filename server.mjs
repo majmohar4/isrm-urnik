@@ -1,12 +1,15 @@
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { extname, join, normalize } from 'node:path';
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || './data';
 const CACHE_FILE = join(DATA_DIR, 'timetable-cache.json');
 const CUSTOM_EVENTS_FILE = join(DATA_DIR, 'custom-events.json');
+const CANCELLATIONS_FILE = join(DATA_DIR, 'cancellations.json');
+const ANNOUNCEMENTS_FILE = join(DATA_DIR, 'announcements.json');
+const ADMIN_TOKENS_FILE = join(DATA_DIR, 'admin-tokens.json');
 const REFRESH_MS = Math.max(5, Number(process.env.REFRESH_MINUTES || 15)) * 60_000;
 const MIN_SOURCE_INTERVAL_MS = Math.max(2, Number(process.env.MIN_REQUEST_INTERVAL_SECONDS || 3)) * 1000;
 const PROGRAMME_SOURCES_FILE = process.env.PROGRAMME_SOURCES_FILE || './programme-sources.json';
@@ -53,28 +56,51 @@ const APP_VERSION = process.env.APP_VERSION || 'unversioned';
 const ANDROID_APP_VERSION = process.env.ANDROID_APP_VERSION || '1.0';
 const ANDROID_APK_URL = process.env.ANDROID_APK_URL || '';
 const ANDROID_RELEASE_URL = process.env.ANDROID_RELEASE_URL || '/android';
+// Short "what's new" for the in-app update sheet; separate items with "|".
+const ANDROID_RELEASE_NOTES = (process.env.ANDROID_RELEASE_NOTES || '').split('|').map((note) => note.trim()).filter(Boolean).slice(0, 6);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const DIST = join(process.cwd(), 'dist');
+// Self-hosted Android builds, mounted read-only from ./releases (see compose.yaml).
+const RELEASES_DIR = process.env.RELEASES_DIR || '/releases';
 const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
 const MAX_UPSTREAM_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_URL_LENGTH = 2048;
 const MAX_CLIENT_STATES = 5_000;
 const MAX_CACHED_WEEKS_PER_PROGRAMME = 20;
 const RATE_WINDOW_MS = 60_000;
-const PRELOAD_WEEKS = Math.min(12, Math.max(1, Number(process.env.PRELOAD_WEEKS || 8)));
+// A whole semester plus exams ahead is kept warm, so browsing forward rarely waits on the faculty sites.
+// The whole school year ahead is kept warm (weeks past NEAR_WEEKS are refreshed daily), so browsing forward or
+// opening a far month practically never waits on the faculty sites.
+const PRELOAD_WEEKS = Math.min(52, Math.max(1, Number(process.env.PRELOAD_WEEKS || 45)));
+const NEAR_WEEKS = 8;
+const FAR_REFRESH_MS = 24 * 60 * 60_000;
+const PRELOAD_PAST_WEEKS = 2;
 const PRELOAD_REFRESH_MS = Math.max(60, Number(process.env.PRELOAD_REFRESH_MINUTES || 360)) * 60_000;
-const USER_RECHECK_MS = 60_000;
+// Viewing a week re-checks it upstream at most this often; with ~40 users, per-view rechecks would mostly repeat work.
+const USER_RECHECK_MS = REFRESH_MS;
 const clientStates = new Map();
 
 mkdirSync(DATA_DIR, { recursive: true });
 
 let cache = loadCache();
 let customEvents = loadCustomEvents();
+// Admin-marked cancelled lectures: one entry per lecture occurrence (programme + event id + date).
+let cancellations = loadJsonList(CANCELLATIONS_FILE);
+// Admin messages shown as a banner to everyone in a programme until they expire.
+let announcements = loadJsonList(ANNOUNCEMENTS_FILE);
+// Long-lived admin keys handed out in exchange for the password, so devices never store the password itself.
+// Only a SHA-256 of each key is kept, together with a fingerprint of the password it was issued under: changing
+// ADMIN_PASSWORD therefore revokes every key at once.
+let adminTokens = loadJsonList(ADMIN_TOKENS_FILE);
+// Bumped on every admin change (events, cancellations, messages). Open apps poll /api/revision — a few bytes — and
+// reload only when it moved, so everyone sees edits within seconds without re-fetching timetables all the time.
+// Starting from the clock means a restart also counts as a change, which is harmless.
+let contentRevision = Date.now();
 const refreshInFlight = new Map();
 const sourceState = new Map();
 const recheckQueuedAt = new Map();
 const personalFriTemplates = new Map();
-const preloadState = { running: false, completed: 0, total: PRELOAD_WEEKS * Object.keys(PROGRAMMES).length, lastStartedAt: null, lastCompletedAt: null, lastError: null };
+const preloadState = { running: false, completed: 0, total: (PRELOAD_WEEKS + PRELOAD_PAST_WEEKS) * Object.keys(PROGRAMMES).length, lastStartedAt: null, lastCompletedAt: null, lastError: null };
 const MAX_BACKOFF_MS = 30 * 60_000;
 const PERSONAL_TEMPLATE_TTL_MS = 6 * 60 * 60_000;
 const MAX_PERSONAL_TEMPLATES = 100;
@@ -100,11 +126,14 @@ function clientKey(request) {
 
 function enforceRateLimit(request, response, path) {
   const now = Date.now();
-  const maxRequests = path.startsWith('/api/admin/') ? 5
-    : path.startsWith('/api/calendar') ? 15
-      : path === '/api/timetable' || path === '/api/month' ? 90
-        : path.startsWith('/api/') ? 30 : 180;
-  const key = clientKey(request);
+  // Each kind of request has its own counter. They used to share one, so browsing a few weeks (90 allowed) used up the
+  // admin limit (5) and adding an event failed with "too many requests".
+  const bucket = path.startsWith('/api/admin/') ? 'admin'
+    : path.startsWith('/api/calendar') ? 'calendar'
+      : path === '/api/timetable' || path === '/api/month' || path === '/api/revision' ? 'timetable'
+        : path.startsWith('/api/') ? 'api' : 'static';
+  const maxRequests = { admin: 30, calendar: 15, timetable: 120, api: 30, static: 180 }[bucket];
+  const key = `${clientKey(request)}|${bucket}`;
   let state = clientStates.get(key);
   if (!state) {
     if (clientStates.size >= MAX_CLIENT_STATES) {
@@ -137,10 +166,24 @@ function enforceRateLimit(request, response, path) {
   return true;
 }
 
+// Weeks parsed before the FMF reservation fix stored titles like `a href="/reservations_list/…" title="X">Rezervacija: X`.
+// Past weeks are rarely re-fetched, so they are repaired once on load instead of waiting for a refresh that never comes.
+function repairFmfTitles(cache) {
+  for (const programme of Object.values(cache.programmes || {})) {
+    for (const week of Object.values(programme.weeks || {})) {
+      for (const event of week.events || []) {
+        const repaired = /^a href=/.test(event.title || '') ? event.title.slice(event.title.indexOf('>') + 1).trim() : null;
+        if (repaired) { event.id = event.id.replace(event.title, repaired); event.title = repaired; }
+      }
+    }
+  }
+  return cache;
+}
+
 function loadCache() {
   try {
     const loaded = JSON.parse(readFileSync(CACHE_FILE, 'utf8'));
-    if (loaded.programmes) return loaded;
+    if (loaded.programmes) return repairFmfTitles(loaded);
     // Preserve the original first-year cache on upgrade, but isolate it from
     // all current and future programme-year feeds.
     return { fetchedAt: loaded.fetchedAt || null, programmes: { '1': { weeks: loaded.weeks || {}, sources: loaded.sources || {}, friTemplate: loaded.friTemplate } } };
@@ -159,18 +202,64 @@ function persistCustomEvents() {
   writeFileSync(CUSTOM_EVENTS_FILE, JSON.stringify(customEvents), 'utf8');
 }
 
+function loadJsonList(file) {
+  try {
+    const loaded = JSON.parse(readFileSync(file, 'utf8'));
+    return Array.isArray(loaded) ? loaded : [];
+  } catch { return []; }
+}
+
+const cancellationKey = (programme, eventId, date) => `${programme}|${eventId}|${date}`;
+
+function applyCancellations(programme, events) {
+  if (!cancellations.length) return events;
+  const byKey = new Map(cancellations.map((entry) => [entry.key, entry]));
+  return events.map((event) => {
+    const entry = byKey.get(cancellationKey(programme, event.id, event.date));
+    return entry ? { ...event, cancelled: true, cancelNote: entry.note || '' } : event;
+  });
+}
+
+function activeAnnouncements(programme) {
+  const now = Date.now();
+  return announcements
+    .filter((entry) => (entry.programme === 'all' || entry.programme === programme) && new Date(entry.expiresAt).getTime() > now)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
 function customEventsFor(programme, weekKey, events) {
+  return applyCancellations(programme, withCustomEvents(programme, weekKey, events));
+}
+
+function withCustomEvents(programme, weekKey, events) {
   if (weekKey === 'subscription') return [...events, ...customEvents.filter((event) => event.programme === 'all' || event.programme === programme)];
-  const lastDay = isoDate(addDays(monday(`${weekKey}T12:00:00`), 4));
+  // Through Sunday: custom events may fall on any day, and weekend ones were silently dropped.
+  const lastDay = isoDate(addDays(monday(`${weekKey}T12:00:00`), 6));
   return [...events, ...customEvents.filter((event) => (event.programme === 'all' || event.programme === programme) && event.date >= weekKey && event.date <= lastDay)]
     .sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`));
 }
 
-function adminAuthorized(request) {
-  const supplied = String(request.headers['x-isrm-admin-password'] || '');
+const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+const passwordFingerprint = () => sha256(`isrm-admin:${ADMIN_PASSWORD}`).slice(0, 16);
+
+function passwordMatches(supplied) {
   if (!ADMIN_PASSWORD || supplied.length !== ADMIN_PASSWORD.length) return false;
   return timingSafeEqual(Buffer.from(supplied), Buffer.from(ADMIN_PASSWORD));
 }
+
+function tokenRecord(request) {
+  const token = String(request.headers['x-isrm-admin-token'] || '');
+  if (!ADMIN_PASSWORD || !/^[a-f0-9]{64}$/.test(token)) return null;
+  const hash = sha256(token);
+  return adminTokens.find((entry) => entry.hash === hash && entry.password === passwordFingerprint()) || null;
+}
+
+// A saved admin key, or the password itself (older app versions still send it).
+function adminAuthorized(request) {
+  return Boolean(tokenRecord(request)) || passwordMatches(String(request.headers['x-isrm-admin-password'] || ''));
+}
+
+function persistAdminTokens() { writeFileSync(ADMIN_TOKENS_FILE, JSON.stringify(adminTokens), 'utf8'); }
 
 async function readJson(request) {
   let body = '';
@@ -412,7 +501,9 @@ function parseFmf(html, weekStart) {
     const left = style.match(/left:\s*([\d.]+)%/i)?.[1];
     const top = style.match(/top:\s*([\d.]+)%/i)?.[1];
     const height = style.match(/height:\s*([\d.]+)%/i)?.[1];
-    const title = block.match(/class="subject"[^>]*>[\s\S]*?([^<]+)<\/a>/i)?.[1]?.replace(/\s+/g, ' ').trim();
+    // `[^<>]` rather than `[^<]`: reservations wrap the name in an inner <a href title>, and a capture that
+    // may contain `>` swallowed that tag's attributes into the title.
+    const title = block.match(/class="subject"[^>]*>[\s\S]*?([^<>]+)<\/a>/i)?.[1]?.replace(/\s+/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
     if (!left || !top || !height || !title) continue;
     const type = block.match(/class="entry-type">\s*([^<]+)/i)?.[1]?.trim() || 'FMF';
     const room = block.match(/class="classroom[^>]*>[\s\S]*?<a[^>]*title="([^"]+)/i)?.[1] || 'Lokacija ni navedena';
@@ -554,17 +645,51 @@ async function personalizedWeek(programme, weekKey, student, options) {
   };
 }
 
+// Background work (rechecks of weeks someone just viewed, preloading) shares the polite per-source request spacing
+// with people who are actually waiting for an uncached week. It used to fire immediately, so every viewed week queued a
+// recheck and a person opening a new week waited behind all of them, 3 s each. Now background jobs run one at a time
+// and only after a few quiet seconds, so they occupy at most one slot ahead of a waiting person.
+const INTERACTIVE_QUIET_MS = 4_000;
+const MAX_BACKGROUND_JOBS = 80;
+const backgroundQueue = [];
+let backgroundRunning = false;
+let lastInteractiveAt = 0;
+
+function markInteractive() { lastInteractiveAt = Date.now(); }
+
+async function yieldToPeople() {
+  while (Date.now() - lastInteractiveAt < INTERACTIVE_QUIET_MS) await wait(1_000);
+}
+
 function queueRecheck(programme, weekKey) {
   const key = `${programme}:${weekKey}`;
   const now = Date.now();
+  const fetchedAt = programmeCache(programme).weeks[weekKey]?.fetchedAt;
+  if (fetchedAt && now - new Date(fetchedAt).getTime() < REFRESH_MS) return;
   if (now - (recheckQueuedAt.get(key) || 0) < USER_RECHECK_MS) return;
+  if (backgroundQueue.length >= MAX_BACKGROUND_JOBS || backgroundQueue.some((job) => job.key === key)) return;
   recheckQueuedAt.set(key, now);
-  refreshWeek(programme, weekKey, { force: true }).catch((error) => console.warn(`Background recheck failed for ${key}:`, error.message));
+  backgroundQueue.push({ key, programme, weekKey });
+  void runBackgroundQueue();
+}
+
+async function runBackgroundQueue() {
+  if (backgroundRunning) return;
+  backgroundRunning = true;
+  try {
+    while (backgroundQueue.length) {
+      await yieldToPeople();
+      const job = backgroundQueue.shift();
+      await refreshWeek(job.programme, job.weekKey, { force: true }).catch((error) => console.warn(`Background recheck failed for ${job.key}:`, error.message));
+    }
+  } finally {
+    backgroundRunning = false;
+  }
 }
 
 function preloadWeekKeys() {
-  const start = monday();
-  return Array.from({ length: PRELOAD_WEEKS }, (_, index) => isoDate(addDays(start, index * 7)));
+  const start = addDays(monday(), -7 * PRELOAD_PAST_WEEKS);
+  return Array.from({ length: PRELOAD_WEEKS + PRELOAD_PAST_WEEKS }, (_, index) => isoDate(addDays(start, index * 7)));
 }
 
 function monthWeekKeys(monthValue) {
@@ -583,10 +708,11 @@ async function preloadUpcomingWeeks() {
   preloadState.lastStartedAt = new Date().toISOString();
   preloadState.lastError = null;
   try {
-    for (const programme of Object.keys(PROGRAMMES)) for (const weekKey of preloadWeekKeys()) {
+    for (const programme of Object.keys(PROGRAMMES)) for (const [index, weekKey] of preloadWeekKeys().entries()) {
       const cachedWeek = programmeCache(programme).weeks[weekKey];
-      const stale = !cachedWeek?.fetchedAt || Date.now() - new Date(cachedWeek.fetchedAt).getTime() >= PRELOAD_REFRESH_MS;
-      if (stale) await refreshWeek(programme, weekKey);
+      const maxAge = index <= PRELOAD_PAST_WEEKS + NEAR_WEEKS ? PRELOAD_REFRESH_MS : FAR_REFRESH_MS;
+      const stale = !cachedWeek?.fetchedAt || Date.now() - new Date(cachedWeek.fetchedAt).getTime() >= maxAge;
+      if (stale) { await yieldToPeople(); await refreshWeek(programme, weekKey); }
       preloadState.completed += 1;
     }
     preloadState.lastCompletedAt = new Date().toISOString();
@@ -629,7 +755,8 @@ function calendarText(programme, weekKey, events) {
     `DTSTAMP:${createdAt}`,
     `DTSTART;TZID=Europe/Ljubljana:${icalDateTime(event.date, event.start)}`,
     `DTEND;TZID=Europe/Ljubljana:${icalDateTime(event.date, event.end)}`,
-    `SUMMARY:${icalEscape(event.title)} (${icalEscape(event.type)})`,
+    `SUMMARY:${event.cancelled ? 'ODPADE: ' : ''}${icalEscape(event.title)} (${icalEscape(event.type)})`,
+    ...(event.cancelled ? ['STATUS:CANCELLED'] : []),
     `LOCATION:${icalEscape(event.room)}`,
     `DESCRIPTION:${icalEscape([event.source, event.teacher].filter(Boolean).join(' · '))}`,
     'END:VEVENT',
@@ -663,6 +790,20 @@ const server = createServer(async (request, response) => {
   if (!enforceRateLimit(request, response, url.pathname)) return;
   if (url.pathname.startsWith('/api/admin/')) {
     if (request.method !== 'POST') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
+    if (url.pathname === '/api/admin/login') {
+      // Exchanges the password for a long-lived key once; the device keeps only the key.
+      const input = await readJson(request).catch(() => ({}));
+      if (!passwordMatches(String(input.password || ''))) return sendJson(response, { error: 'Napačno administratorsko geslo.' }, 401);
+      const token = randomBytes(32).toString('hex');
+      adminTokens = [...adminTokens.filter((entry) => entry.password === passwordFingerprint()).slice(-49), { hash: sha256(token), password: passwordFingerprint(), label: String(input.device || '').slice(0, 60), createdAt: new Date().toISOString() }];
+      persistAdminTokens();
+      return sendJson(response, { token });
+    }
+    if (url.pathname === '/api/admin/logout') {
+      const record = tokenRecord(request);
+      if (record) { adminTokens = adminTokens.filter((entry) => entry !== record); persistAdminTokens(); }
+      return sendJson(response, { ok: true });
+    }
     if (!adminAuthorized(request)) return sendJson(response, { error: 'Napačno administratorsko geslo.' }, 401);
     try {
       if (url.pathname === '/api/admin/verify') return sendJson(response, { ok: true });
@@ -670,13 +811,50 @@ const server = createServer(async (request, response) => {
       if (url.pathname === '/api/admin/events') {
         const event = customEventFrom(input);
         customEvents.push(event);
+        contentRevision += 1;
         persistCustomEvents();
         return sendJson(response, { event }, 201);
+      }
+      if (url.pathname === '/api/admin/cancel') {
+        const programme = programmeId(String(input.programme || ''));
+        const eventId = String(input.eventId || '').slice(0, 300);
+        const date = String(input.date || '');
+        if (!eventId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(response, { error: 'Neveljavna obveznost.' }, 400);
+        const key = cancellationKey(programme, eventId, date);
+        cancellations = cancellations.filter((entry) => entry.key !== key);
+        if (input.cancelled !== false) cancellations.push({ key, programme, eventId, date, note: String(input.note || '').trim().slice(0, 160), at: new Date().toISOString() });
+        // Old dates are dropped so the file never grows without bound.
+        const cutoff = isoDate(addDays(new Date(), -60));
+        cancellations = cancellations.filter((entry) => entry.date >= cutoff);
+        contentRevision += 1;
+        writeFileSync(CANCELLATIONS_FILE, JSON.stringify(cancellations), 'utf8');
+        return sendJson(response, { ok: true, cancelled: input.cancelled !== false });
+      }
+      if (url.pathname === '/api/admin/announcements') {
+        const text = String(input.text || '').trim().slice(0, 500);
+        if (!text) return sendJson(response, { error: 'Vnesi sporočilo.' }, 400);
+        const days = Math.min(30, Math.max(1, Number(input.days) || 3));
+        const programme = ['all', '1', '2', '3'].includes(input.programme) ? input.programme : 'all';
+        const createdAt = new Date().toISOString();
+        const announcement = { id: `msg-${randomUUID()}`, text, programme, createdAt, expiresAt: new Date(Date.now() + days * 86_400_000).toISOString() };
+        announcements = [...announcements.filter((entry) => new Date(entry.expiresAt).getTime() > Date.now()), announcement];
+        contentRevision += 1;
+        writeFileSync(ANNOUNCEMENTS_FILE, JSON.stringify(announcements), 'utf8');
+        return sendJson(response, { announcement }, 201);
+      }
+      if (url.pathname === '/api/admin/announcements/delete') {
+        const before = announcements.length;
+        announcements = announcements.filter((entry) => entry.id !== input.id);
+        if (announcements.length === before) return sendJson(response, { error: 'Sporočilo ni najdeno.' }, 404);
+        contentRevision += 1;
+        writeFileSync(ANNOUNCEMENTS_FILE, JSON.stringify(announcements), 'utf8');
+        return sendJson(response, { ok: true });
       }
       if (url.pathname === '/api/admin/events/delete') {
         const before = customEvents.length;
         customEvents = customEvents.filter((event) => event.id !== input.id);
         if (customEvents.length === before) return sendJson(response, { error: 'Dogodek ni najden.' }, 404);
+        contentRevision += 1;
         persistCustomEvents();
         return sendJson(response, { ok: true });
       }
@@ -684,10 +862,14 @@ const server = createServer(async (request, response) => {
     } catch (error) { return sendJson(response, { error: error.message || 'Neveljavna zahteva.' }, 400); }
   }
   if (request.method !== 'GET') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
+  if (url.pathname === '/api/revision') return sendJson(response, { revision: contentRevision });
+  // The app's failsafe reads FRI/FMF itself when this server is down; it keeps the latest source links from here.
+  if (url.pathname === '/api/sources') return sendJson(response, { programmes: Object.fromEntries(Object.entries(PROGRAMMES).map(([id, profile]) => [id, { friUrl: profile.friUrl, fmfUrl: profile.fmfUrl }])) });
   if (url.pathname === '/api/release') return sendJson(response, {
     androidVersion: ANDROID_APP_VERSION,
     androidApkUrl: publicReleaseUrl(ANDROID_APK_URL),
     androidReleaseUrl: publicReleaseUrl(ANDROID_RELEASE_URL, { allowPath: true }) || '/android',
+    androidNotes: ANDROID_RELEASE_NOTES,
   });
   if (url.pathname === '/api/student-programme') {
     const student = studentNumber(url.searchParams.get('student'));
@@ -713,13 +895,14 @@ const server = createServer(async (request, response) => {
       // in behind the response instead of delaying the mobile month view.
       if (!Object.values(stored.weeks).some((week) => week?.events?.length)) await refreshWeek(programme, weekKeys[0]);
       const weeks = await Promise.all(weekKeys.map(async (weekKey) => {
-        const cachedWeek = stored.weeks[weekKey];
-        if (!cachedWeek) { queueRecheck(programme, weekKey); return []; }
+        let cachedWeek = stored.weeks[weekKey];
+        // A missing week is fetched now rather than shown as an empty month; with the year-long preload this is rare.
+        if (!cachedWeek) { markInteractive(); cachedWeek = await refreshWeek(programme, weekKey).catch(() => null); if (!cachedWeek) return []; }
         queueRecheck(programme, weekKey);
         const baseEvents = student ? (await personalizedWeek(programme, weekKey, student)).events : cachedWeek.events;
         return customEventsFor(programme, weekKey, baseEvents);
       }));
-      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, month, events: weeks.flat(), cached: true });
+      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, month, events: weeks.flat(), announcements: activeAnnouncements(programme), cached: true });
     } catch {
       return sendJson(response, { error: 'Mesečnega urnika trenutno ni mogoče pripraviti.', events: [] }, 503);
     }
@@ -736,11 +919,12 @@ const server = createServer(async (request, response) => {
     const cachedWeek = stored.weeks[weekKey];
     if (cachedWeek && !manualRefresh && !student) {
       queueRecheck(programme, weekKey);
-      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, weekStart: weekKey, ...cachedWeek, events: customEventsFor(programme, weekKey, cachedWeek.events), sources: stored.sources, refreshMinutes: REFRESH_MS / 60_000, revalidating: true });
+      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, weekStart: weekKey, ...cachedWeek, events: customEventsFor(programme, weekKey, cachedWeek.events), sources: stored.sources, announcements: activeAnnouncements(programme), refreshMinutes: REFRESH_MS / 60_000, revalidating: true });
     }
     try {
+      markInteractive();
       const week = student ? await personalizedWeek(programme, weekKey, student, { force: manualRefresh }) : await refreshWeek(programme, weekKey, { force: manualRefresh });
-      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, weekStart: weekKey, ...week, events: customEventsFor(programme, weekKey, week.events), sources: stored.sources, refreshMinutes: REFRESH_MS / 60_000, personalized: Boolean(student) });
+      return sendJson(response, { programme, programmeLabel: PROGRAMMES[programme].label, weekStart: weekKey, ...week, events: customEventsFor(programme, weekKey, week.events), sources: stored.sources, announcements: activeAnnouncements(programme), refreshMinutes: REFRESH_MS / 60_000, personalized: Boolean(student) });
     } catch (error) {
       return sendJson(response, { error: 'Urnika trenutno ni mogoče osvežiti.', detail: error.message, programme, weekStart: weekKey, events: stored.weeks[weekKey]?.events || [], sources: stored.sources }, 503);
     }
@@ -794,6 +978,23 @@ const server = createServer(async (request, response) => {
     return sendJson(response, { ok: failingSources.length === 0, fetchedAt: cache.fetchedAt, failingSources, sources, preload: preloadState }, failingSources.length ? 503 : 200);
   }
 
+  // A stable, shareable link that always points at the newest APK (manual updates, or sending it to someone).
+  if (url.pathname === '/download' || url.pathname === '/download/') {
+    const target = publicReleaseUrl(ANDROID_APK_URL);
+    if (!target) return sendJson(response, { error: 'Android aplikacija še ni objavljena.' }, 404);
+    response.writeHead(302, { location: target, 'cache-control': 'no-store' });
+    return response.end();
+  }
+  const download = url.pathname.match(/^\/downloads\/(ISRM-\d+(?:\.\d+)*\.apk)$/);
+  if (download) {
+    // The name is matched against a strict pattern, so it cannot climb out of RELEASES_DIR. no-cache: a rebuilt APK can
+    // reuse its version's file name, and a cached copy (Cloudflare kept one for a day) would hand out the old build.
+    const file = join(RELEASES_DIR, download[1]);
+    if (!existsSync(file)) return sendJson(response, { error: 'Ta izdaja ne obstaja.' }, 404);
+    response.writeHead(200, { 'content-type': 'application/vnd.android.package-archive', 'content-length': statSync(file).size, 'content-disposition': `attachment; filename="${download[1]}"`, 'cache-control': 'no-cache' });
+    return createReadStream(file).pipe(response);
+  }
+
   const requestedPath = url.pathname === '/' ? '/index.html' : url.pathname;
   const candidate = normalize(join(DIST, requestedPath));
   const file = (candidate === DIST || candidate.startsWith(`${DIST}/`)) && existsSync(candidate) ? candidate : join(DIST, 'index.html');
@@ -836,3 +1037,52 @@ server.maxHeadersCount = 50;
 
 preloadUpcomingWeeks();
 setInterval(() => preloadUpcomingWeeks(), REFRESH_MS).unref();
+
+// Faculties publish changes overnight. At 05:00 and 06:00 (server TZ) this week and next are fetched fresh from both
+// sources, and the FRI recurrence — otherwise reused indefinitely once built — is rebuilt from today's FRI page. The
+// old template is only replaced when the new page parsed into events, so a failed fetch never empties FRI.
+const MORNING_HOURS = [5, 6];
+let lastMorningRun = '';
+
+async function refreshFriTemplate(programme) {
+  const profile = PROGRAMMES[programme];
+  const stored = programmeCache(programme);
+  const weekStart = monday();
+  try {
+    const events = parseFri(await fetchText(`FRI-${programme}`, profile.friUrl), weekStart, profile.friUrl);
+    if (events.length) {
+      stored.friTemplate = { version: 5, fetchedAt: new Date().toISOString(), events: createFriTemplate(events, weekStart) };
+      synchronizeFriTemplate(programme);
+      persistCache();
+    }
+  } catch (error) { console.warn(`FRI template refresh failed for ${programme}:`, error.message); }
+}
+
+async function morningRefresh() {
+  for (const programme of Object.keys(PROGRAMMES)) {
+    await refreshFriTemplate(programme);
+    for (const offset of [0, 7]) await refreshWeek(programme, isoDate(addDays(monday(), offset)), { force: true }).catch((error) => console.warn(`Morning refresh failed for ${programme}:`, error.message));
+  }
+  personalFriTemplates.clear();
+  console.log(`Morning refresh finished at ${new Date().toISOString()}`);
+}
+
+// FRI is one page per programme, so it is also re-read whenever its copy is older than FRI_TEMPLATE_MAX_AGE_MS —
+// checked shortly after start-up (a restart over 05:00 must not leave it stale) and every 15 minutes after that.
+const FRI_TEMPLATE_MAX_AGE_MS = 3 * 60 * 60_000;
+async function refreshStaleFriTemplates() {
+  for (const programme of Object.keys(PROGRAMMES)) {
+    if (Date.now() - new Date(programmeCache(programme).friTemplate?.fetchedAt || 0).getTime() > FRI_TEMPLATE_MAX_AGE_MS) {
+      await yieldToPeople();
+      await refreshFriTemplate(programme);
+    }
+  }
+}
+setTimeout(() => { void refreshStaleFriTemplates(); }, 20_000).unref();
+setInterval(() => { void refreshStaleFriTemplates(); }, 15 * 60_000).unref();
+
+setInterval(() => {
+  const now = new Date();
+  const key = `${isoDate(now)}-${now.getHours()}`;
+  if (MORNING_HOURS.includes(now.getHours()) && key !== lastMorningRun) { lastMorningRun = key; void morningRefresh(); }
+}, 60_000).unref();

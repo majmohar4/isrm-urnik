@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { APP_VERSION } from './version.js';
 
 const DAY_NAMES = ['Pon', 'Tor', 'Sre', 'Čet', 'Pet'];
 const FULL_DAY_NAMES = ['ponedeljek', 'torek', 'sreda', 'četrtek', 'petek'];
+// Indexed by Date.getDay(), so a weekend column gets its own name.
+const SHORT_BY_DAY = ['Ned', 'Pon', 'Tor', 'Sre', 'Čet', 'Pet', 'Sob'];
+const FULL_BY_DAY = ['nedelja', 'ponedeljek', 'torek', 'sreda', 'četrtek', 'petek', 'sobota'];
 const LOCAL_WEEK_CACHE_KEY = 'isrm-week-cache-v1';
 const LOCAL_MONTH_CACHE_KEY = 'isrm-month-cache-v1';
 const LOCAL_CACHE_TTL_MS = 10 * 60_000;
@@ -14,6 +17,18 @@ function monday(value = new Date()) {
   date.setDate(date.getDate() - day + 1);
   date.setHours(0, 0, 0, 0);
   return date;
+}
+
+// On Saturday and Sunday the useful week is the coming one, like in the Android app.
+function currentWeek(value = new Date()) {
+  const day = value.getDay();
+  return day === 6 || day === 0 ? plusDays(monday(value), 7) : monday(value);
+}
+
+// Mon–Fri, plus Saturday/Sunday only when they hold an event (e.g. an admin-added weekend exam).
+function daysFor(weekStart, events) {
+  return Array.from({ length: 7 }, (_, index) => plusDays(weekStart, index))
+    .filter((day, index) => index < 5 || events.some((event) => event.date === dateKey(day)));
 }
 
 function dateKey(date) {
@@ -58,6 +73,15 @@ function monthWeekStarts(date) {
   return weeks;
 }
 
+// First Monday on or after the 1st, so a month page always starts inside its own month.
+function firstWeekOfMonth(year, monthIndex) {
+  const first = new Date(year, monthIndex, 1);
+  return plusDays(first, (8 - (first.getDay() || 7)) % 7);
+}
+
+const PAGE_GAP = 24;
+const isNarrow = () => window.matchMedia('(max-width: 720px)').matches;
+
 function formatDate(date) {
   return new Intl.DateTimeFormat('sl-SI', { day: 'numeric', month: 'short' }).format(date).replace('.', '');
 }
@@ -84,11 +108,10 @@ const isStandaloneApp = () => window.matchMedia('(display-mode: standalone)').ma
 // so the normal Safari/Chrome instructions remain available when it cannot be detected.
 const isBraveBrowser = () => /Brave/i.test(navigator.userAgent) || typeof navigator.brave !== 'undefined';
 
+// A fresh start always opens on today; only an explicit ?week= link (or history navigation) opens another week.
 function weekFromLocation() {
-  const value = new URLSearchParams(window.location.search).get('week');
-  const saved = window.localStorage.getItem('timetable-last-week');
-  const candidate = value || saved;
-  return candidate && /^\d{4}-\d{2}-\d{2}$/.test(candidate) ? monday(`${candidate}T12:00:00`) : monday();
+  const candidate = new URLSearchParams(window.location.search).get('week');
+  return candidate && /^\d{4}-\d{2}-\d{2}$/.test(candidate) ? monday(`${candidate}T12:00:00`) : currentWeek();
 }
 
 function Icon({ name, size = 20 }) {
@@ -110,14 +133,38 @@ function Icon({ name, size = 20 }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{shapes[name]}</svg>;
 }
 
+// Measures the selected button so one pill can slide between options instead of each button switching colour.
+function usePill(ref, deps) {
+  const [style, setStyle] = useState(null);
+  const placed = useRef(false);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const selected = ref.current?.querySelector('.is-selected');
+      if (!selected) { setStyle(null); return; }
+      setStyle({ width: `${selected.offsetWidth}px`, height: `${selected.offsetHeight}px`, transform: `translate(${selected.offsetLeft}px, ${selected.offsetTop}px)`, transition: placed.current ? undefined : 'none' });
+      placed.current = true;
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, deps);
+  return style;
+}
+
+function PillGroup({ className, selected, children, ...rest }) {
+  const ref = useRef(null);
+  const style = usePill(ref, [selected]);
+  return <div ref={ref} className={`${className} has-pill`} {...rest}><span className="pill" style={style || { opacity: 0 }} aria-hidden="true" />{children}</div>;
+}
+
 function EventItem({ event, now, onPreview }) {
   const active = now && `${event.date}T${event.start}:00` <= now.toISOString() && `${event.date}T${event.end}:00` > now.toISOString();
-  return <article className={`event event--${event.source.toLowerCase()} ${active ? 'event--active' : ''}`}>
+  return <article className={`event event--${event.source.toLowerCase()} ${active && !event.cancelled ? 'event--active' : ''} ${event.cancelled ? 'is-cancelled' : ''}`}>
     <button className="event__summary" onClick={() => onPreview(event)} aria-label={`Podrobnosti: ${event.title}`}>
       <time className="event__time">{event.start}<span>{event.end}</span></time>
       <div className="event__body">
-        <div className="event__line"><h3>{event.title}</h3><span className="event__type">{event.type}</span></div>
-        <p><Icon name="pin" size={15} />{event.room}</p>
+        <div className="event__line"><h3>{event.title}</h3><span className="event__type">{event.cancelled ? 'Odpade' : event.type}</span></div>
+        {event.cancelled ? <p className="cancel-note">{['Odpade', event.cancelNote].filter(Boolean).join(' · ')}</p> : <p><Icon name="pin" size={15} />{event.room}</p>}
       </div>
       <span className="event__source">{event.source}</span>
     </button>
@@ -166,10 +213,10 @@ function Timeline({ events, weekDays, onEventSelect, mode = 'week', mobileDayInd
         {weekDays.map((day, index) => {
           const dayEvents = layoutTimelineEvents(events.filter((event) => event.date === dateKey(day)));
           return <section className={`timeline-day ${index === mobileDayIndex ? 'is-mobile-active' : ''}`} key={dateKey(day)}>
-            <header><b>{DAY_NAMES[index]}</b><span>{formatDate(day)}</span></header>
+            <header><b>{SHORT_BY_DAY[day.getDay()]}</b><span>{formatDate(day)}</span></header>
             <div className="timeline-day__body">
-              {dayEvents.map((event) => <article key={event.id} className={`timeline-event timeline-event--${event.source.toLowerCase()}`} style={{ top: `${event.timeline.top}px`, height: `${Math.max(30, event.timeline.height)}px`, left: `${event.timeline.column * 100 / event.timeline.columns}%`, width: `${100 / event.timeline.columns}%` }} title={`${event.title}, ${event.start}–${event.end}, ${event.room}`} role="button" tabIndex="0" onClick={() => onEventSelect(event)} onKeyDown={(keyboardEvent) => { if (keyboardEvent.key === 'Enter' || keyboardEvent.key === ' ') { keyboardEvent.preventDefault(); onEventSelect(event); } }} aria-label={`Podrobnosti: ${event.title}`}>
-                <time>{event.start}–{event.end}</time><strong>{event.title}</strong><span>{event.room}</span><em>{event.source}</em>
+              {dayEvents.map((event) => <article key={event.id} className={`timeline-event timeline-event--${event.source.toLowerCase()} ${event.cancelled ? 'is-cancelled' : ''}`} style={{ top: `${event.timeline.top}px`, height: `${Math.max(30, event.timeline.height)}px`, left: `${event.timeline.column * 100 / event.timeline.columns}%`, width: `${100 / event.timeline.columns}%` }} title={`${event.title}, ${event.start}–${event.end}, ${event.room}`} role="button" tabIndex="0" onClick={() => onEventSelect(event)} onKeyDown={(keyboardEvent) => { if (keyboardEvent.key === 'Enter' || keyboardEvent.key === ' ') { keyboardEvent.preventDefault(); onEventSelect(event); } }} aria-label={`Podrobnosti: ${event.title}`}>
+                <time>{event.cancelled ? 'ODPADE · ' : ''}{event.start}–{event.end}</time><strong>{event.title}</strong><span>{event.room}</span><em>{event.source}</em>
               </article>)}
             </div>
           </section>;
@@ -183,7 +230,7 @@ function WholeWeek({ events, weekDays, onEventSelect }) {
   return <div className="whole-week" aria-label="Celoten teden na enem zaslonu">
     {weekDays.map((day, index) => {
       const dayEvents = events.filter((event) => event.date === dateKey(day));
-      return <section key={dateKey(day)} className="whole-week__day"><header><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></header><div>{dayEvents.length ? dayEvents.map((event) => <button key={event.id} className={`whole-week__event whole-week__event--${event.source.toLowerCase()}`} onClick={() => onEventSelect(event)} aria-label={`Podrobnosti: ${event.title}`}><time>{event.start}</time><strong>{event.title}</strong><small>{event.source}</small></button>) : <span className="whole-week__empty">—</span>}</div></section>;
+      return <section key={dateKey(day)} className="whole-week__day"><header><b>{SHORT_BY_DAY[day.getDay()]}</b><span>{day.getDate()}</span></header><div>{dayEvents.length ? dayEvents.map((event) => <button key={event.id} className={`whole-week__event whole-week__event--${event.source.toLowerCase()}`} onClick={() => onEventSelect(event)} aria-label={`Podrobnosti: ${event.title}`}><time>{event.start}</time><strong>{event.title}</strong><small>{event.source}</small></button>) : <span className="whole-week__empty">—</span>}</div></section>;
     })}
   </div>;
 }
@@ -194,9 +241,11 @@ function MonthView({ events, month, onEventSelect, onDaySelect }) {
     (days[event.date] ||= []).push(event);
     return days;
   }, {}), [events]);
-  return <div className="month-view" aria-label="Mesečni urnik"><header>{FULL_DAY_NAMES.map((day) => <b key={day}>{day.slice(0, 3)}</b>)}</header><div className="month-grid">{weeks.flatMap((week) => Array.from({ length: 5 }, (_, index) => {
+  // Weekend columns appear only in a month that has a weekend event.
+  const columns = events.some((event) => [0, 6].includes(new Date(`${event.date}T12:00:00`).getDay())) ? 7 : 5;
+  return <div className="month-view" style={{ '--month-days': columns }} aria-label="Mesečni urnik"><header>{[...FULL_DAY_NAMES, 'sobota', 'nedelja'].slice(0, columns).map((day) => <b key={day}>{day.slice(0, 3)}</b>)}</header><div className="month-grid">{weeks.flatMap((week) => Array.from({ length: columns }, (_, index) => {
     const day = plusDays(week, index); const key = dateKey(day); const isCurrentMonth = day.getMonth() === month.getMonth();
-    return <section className={isCurrentMonth ? '' : 'is-outside'} key={key}><button className="month-day-jump" onClick={() => onDaySelect(day)} aria-label={`Odpri ${formatDate(day)}`}><time>{day.getDate()}</time></button>{(eventsByDay[key] || []).map((event) => <button key={event.id} className={`month-event month-event--${event.source.toLowerCase()}`} onClick={() => onEventSelect(event)}><span>{event.start}</span>{event.title}</button>)}</section>;
+    return <section className={isCurrentMonth ? '' : 'is-outside'} key={key}><button className="month-day-jump" onClick={() => onDaySelect(day)} aria-label={`Odpri ${formatDate(day)}`}><time>{day.getDate()}</time></button>{(eventsByDay[key] || []).map((event) => <button key={event.id} className={`month-event month-event--${event.source.toLowerCase()} ${event.cancelled ? 'is-cancelled' : ''}`} onClick={() => onEventSelect(event)}><span>{event.start}</span>{event.title}</button>)}</section>;
   }))}</div></div>;
 }
 
@@ -209,7 +258,7 @@ function PrivacyPolicy() {
     <section><h2>Podatki v tej napravi</h2><p>Izbrani letnik, videz, zadnji pogled in po želji vpisna številka se shranijo samo v lokalno shrambo tvoje naprave. Vpisno številko lahko kadarkoli odstraniš v nastavitvah. Če odkleneš urejanje dogodkov, se administratorsko geslo prav tako hrani lokalno v tem brskalniku, dokler ne počistiš podatkov brskalnika.</p></section>
     <section><h2>Osebni urnik</h2><p>Ko vključiš osebni urnik, aplikacija pošlje vpisno številko samo uradnemu strežniku urnikov FRI, da izbere tvojo skupino vaj. IŠRM je ne prodaja, ne uporablja za profiliranje in je ne zapisuje v svoj urnik-cache.</p></section>
     <section><h2>Strežnik in koledar</h2><p>Strežnik začasno hrani javne podatke urnika, da je prikaz hiter. Naročniška povezava .ics lahko vsebuje vpisno številko v naslovu, zato jo deli samo z aplikacijami, ki jim zaupaš.</p></section>
-    <section><h2>Android aplikacija in pripomočki</h2><p>Android aplikacija ne zahteva dostopa do lokacije, stikov, kamer, datotek ali obvestil. Uporablja le omrežje in običajna Androidova dovoljenja za načrtovano osveževanje pripomočka. Za pripomoček shrani samo njegov način prikaza, izbrani letnik in neobvezno vpisno številko v lokalno shrambo aplikacije. Urnik se prenaša izključno prek šifrirane povezave HTTPS.</p></section>
+    <section><h2>Android aplikacija in pripomočki</h2><p>Android aplikacija ne zahteva dostopa do lokacije, stikov, kamer, datotek ali obvestil. Uporablja le omrežje, običajna Androidova dovoljenja za načrtovano osveževanje pripomočka in, ko ga sam potrdiš, dovoljenje za nameščanje lastnih posodobitev, ki se prenesejo izključno s tega strežnika. Za pripomoček shrani samo njegov način prikaza, izbrani letnik in neobvezno vpisno številko v lokalno shrambo aplikacije. Urnik se prenaša izključno prek šifrirane povezave HTTPS.</p></section>
     <section><h2>Operativna obvestila</h2><p>Če upravitelj vključi ntfy, se tja pošiljajo le tehnična obvestila o zagonu, ustavitvi in dosegljivosti virov—ne osebne vpisne številke.</p></section>
     <p className="privacy-updated">Zadnja posodobitev: 2. oktober 2026.</p>
   </main>;
@@ -245,7 +294,8 @@ function AndroidReleasePage() {
       <div><b>{updateAvailable ? 'Posodobitev je pripravljena' : installedVersion ? 'Aplikacija je posodobljena' : 'Zadnja izdaja'}</b><strong>IŠRM {release.androidVersion}</strong><p>{updateAvailable ? `Nameščena je različica ${installedVersion}.` : 'Android 8 ali novejši · brez računov in oglasov.'}</p></div>
       {downloadAvailable ? <a href={release.androidApkUrl} className="android-release-action"><Icon name="download" size={18} />{updateAvailable ? 'Prenesi posodobitev' : 'Prenesi APK'}</a> : <p className="android-release-pending">APK še ni objavljen. Poskusi znova pozneje.</p>}
     </section>}
-    <section className="android-release-notes"><h2>Kako poteka posodobitev</h2><p>Ko odpreš Android aplikacijo, sama preveri različico. Če je na voljo novejša, te odpre na tej strani, kjer z enim dotikom preneseš podpisan APK. Android zaradi varnosti nikoli ne dovoli samodejne namestitve brez tvoje potrditve. Za različico iz Trgovine Play uporabi uradno stran trgovine, ko bo objavljena.</p></section>
+    {release?.androidApkUrl && <p className="android-release-direct">Neposredna povezava za ročni prenos ali deljenje: <a href="/download">{window.location.host}/download</a></p>}
+    <section className="android-release-notes"><h2>Kako poteka posodobitev</h2><p>Ko odpreš Android aplikacijo, sama preveri različico. Od različice 2.0 posodobitev prenese in namesti kar v aplikaciji; ročno pa jo lahko vedno preneseš tudi tukaj. Android zaradi varnosti nikoli ne dovoli samodejne namestitve brez tvoje potrditve. Za različico iz Trgovine Play uporabi uradno stran trgovine, ko bo objavljena.</p></section>
   </main>;
 }
 
@@ -263,18 +313,29 @@ function App() {
   const [installGuideOpen, setInstallGuideOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [viewMode, setViewMode] = useState(() => window.localStorage.getItem('timetable-view') || 'agenda');
-  const [timelineDayIndex, setTimelineDayIndex] = useState(() => Math.max(0, new Date().getDay() - 1));
+  // Mon–Fri only: on weekends Časovni opens on Monday of the coming week (getDay() - 1 used to give 5 on Saturday, an empty page).
+  const [timelineDayIndex, setTimelineDayIndex] = useState(() => { const day = new Date().getDay(); return day === 0 || day === 6 ? 0 : day - 1; });
   const [theme, setTheme] = useState(() => window.localStorage.getItem('timetable-theme') || 'dark');
   const [programmeYear, setProgrammeYear] = useState(() => window.localStorage.getItem('timetable-programme-year') || '1');
   const [studentNumber, setStudentNumber] = useState(() => window.localStorage.getItem('timetable-student-number') || '');
   const [studentNumberDraft, setStudentNumberDraft] = useState(() => window.localStorage.getItem('timetable-student-number') || '');
   const [studentNumberError, setStudentNumberError] = useState('');
-  const [adminPassword, setAdminPassword] = useState(() => window.localStorage.getItem('timetable-admin-password') || '');
-  const [adminDraft, setAdminDraft] = useState(() => window.localStorage.getItem('timetable-admin-password') || '');
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
+  // Only a revocable admin key is stored; the password is typed once, exchanged for the key and never kept.
+  const [adminToken, setAdminToken] = useState(() => { try { return window.localStorage.getItem('isrm-admin-token') || ''; } catch { return ''; } });
+  const [adminDraft, setAdminDraft] = useState('');
+  const adminUnlocked = Boolean(adminToken);
+  // Saved access only allows editing; this switch turns it on and starts off on every page load, so nothing changes by accident.
+  const [editMode, setEditMode] = useState(false);
+  const canEdit = adminUnlocked && editMode;
+  const [monthReload, setMonthReload] = useState(0);
   const [adminError, setAdminError] = useState('');
   const [customEvent, setCustomEvent] = useState({ title: '', date: dateKey(new Date()), start: '12:00', end: '13:00', room: '', programme: 'all' });
   const [eventComposerOpen, setEventComposerOpen] = useState(false);
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
+  const [messageComposerOpen, setMessageComposerOpen] = useState(false);
+  const [messageDraft, setMessageDraft] = useState({ text: '', days: 3 });
+  const [cancelNote, setCancelNote] = useState('');
+  const [dismissedMessages, setDismissedMessages] = useState(() => { try { return JSON.parse(window.localStorage.getItem('isrm-dismissed-messages') || '[]'); } catch { return []; } });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
@@ -284,7 +345,15 @@ function App() {
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [navigationDirection, setNavigationDirection] = useState('');
   const [navigationKey, setNavigationKey] = useState(0);
-  const [swipeOffset, setSwipeOffset] = useState(0);
+  // Page-turn state while a horizontal swipe is in progress: offset in px, which way, whether a day or a whole week turns.
+  const [drag, setDrag] = useState(null);
+  const [rollDirection, setRollDirection] = useState('');
+  const [dayShift, setDayShift] = useState(null);
+  const [viewFade, setViewFade] = useState(false);
+  const pagerRef = useRef(null);
+  const turningRef = useRef(false);
+  const turnPageRef = useRef(null);
+  const liveRef = useRef({});
   const refreshRef = useRef(null);
   const refreshingRef = useRef(false);
   const weekRef = useRef(weekStart);
@@ -295,10 +364,11 @@ function App() {
 
   const weekKey = dateKey(weekStart);
   const monthKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}`;
-  const weekDays = useMemo(() => Array.from({ length: 5 }, (_, index) => plusDays(weekStart, index)), [weekStart]);
+  const weekDays = useMemo(() => daysFor(weekStart, data?.events || []), [weekStart, data]);
   const todayKey = dateKey(new Date());
 
-  const load = (refresh = false) => {
+  // bypassLocal: skip the 10-minute browser cache but not the server's (used when an admin change was announced).
+  const load = (refresh = false, bypassLocal = false) => {
     const localKey = cacheKeyFor(weekKey, programmeYear, studentNumber);
     const cached = timetableCacheRef.current[localKey];
     const cacheIsFresh = cached && Date.now() - cached.storedAt < LOCAL_CACHE_TTL_MS;
@@ -312,7 +382,7 @@ function App() {
       setData(cached.payload);
       setError('');
       setLoading(false);
-      if (!refresh && cacheIsFresh) return Promise.resolve();
+      if (!refresh && !bypassLocal && cacheIsFresh) { prefetchNeighbours(); return Promise.resolve(); }
     } else setLoading(true);
     const controller = new AbortController();
     timetableRequestRef.current = controller;
@@ -326,6 +396,7 @@ function App() {
         timetableCacheRef.current[localKey] = { storedAt: Date.now(), payload };
         timetableCacheRef.current = writeLocalCache(LOCAL_WEEK_CACHE_KEY, timetableCacheRef.current, 24);
         setError(response.ok ? '' : payload.error || 'Prikazani so zadnji shranjeni podatki.');
+        if (response.ok) prefetchNeighbours();
       } catch (requestError) {
         if (requestError.name !== 'AbortError' && timetableRequestRef.current === controller) setError(requestError.message || 'Povezava z urnikom ni uspela.');
       } finally {
@@ -339,10 +410,27 @@ function App() {
       else run();
     });
   };
-  refreshRef.current = () => load(true);
+  refreshRef.current = (refresh = true, bypassLocal = false) => load(refresh, bypassLocal);
+
+  // The weeks on either side are fetched quietly so a swipe already shows the real neighbouring week, not a placeholder.
+  const prefetchNeighbours = () => {
+    [-7, 7].forEach((offset) => {
+      const key = dateKey(plusDays(weekStart, offset));
+      const localKey = cacheKeyFor(key, programmeYear, studentNumber);
+      const cached = timetableCacheRef.current[localKey];
+      if (cached && Date.now() - cached.storedAt < LOCAL_CACHE_TTL_MS) return;
+      fetch(`/api/timetable?week=${key}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`)
+        .then((response) => (response.ok ? response.json() : null))
+        .then((payload) => {
+          if (!payload) return;
+          timetableCacheRef.current[localKey] = { storedAt: Date.now(), payload };
+          timetableCacheRef.current = writeLocalCache(LOCAL_WEEK_CACHE_KEY, timetableCacheRef.current, 24);
+        })
+        .catch(() => undefined);
+    });
+  };
 
   useEffect(() => { setSelectedEvent(null); load(); }, [weekKey, programmeYear, studentNumber]);
-  useEffect(() => { window.localStorage.setItem('timetable-last-week', weekKey); }, [weekKey]);
   useEffect(() => {
     if (viewMode !== 'month') return;
     let cancelled = false;
@@ -360,7 +448,7 @@ function App() {
       })
       .catch(() => { if (!cancelled && !cached) setMonthEvents([]); });
     return () => { cancelled = true; };
-  }, [viewMode, monthKey, programmeYear, studentNumber]);
+  }, [viewMode, monthKey, programmeYear, studentNumber, monthReload]);
   useEffect(() => { weekRef.current = weekStart; }, [weekStart]);
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -389,39 +477,60 @@ function App() {
     let startX = null;
     let distance = 0;
     let active = false;
-    const reset = () => { startY = null; startX = null; distance = 0; active = false; setPullDistance(0); setSwipeOffset(0); };
+    let canPull = false;
+    let horizontal = false;
+    let samples = [];
+    const reset = () => { startY = null; startX = null; distance = 0; active = false; canPull = false; horizontal = false; samples = []; setPullDistance(0); };
+    // In Časovni on a phone only the day turns, until the swipe would leave the week.
+    const dayLevel = (forward) => { const { viewMode: mode, timelineDayIndex: index, dayCount } = liveRef.current; return mode === 'timeline' && isNarrow() && (forward ? index < dayCount - 1 : index > 0); };
     const onStart = (event) => {
-      if (refreshingRef.current || window.scrollY > 0 || event.touches.length !== 1 || !event.target.closest('.schedule')) return;
+      if (refreshingRef.current || turningRef.current || event.touches.length !== 1 || !event.target.closest('.schedule') || event.target.closest('.view-modes')) return;
       startY = event.touches[0].clientY;
       startX = event.touches[0].clientX;
+      canPull = window.scrollY <= 0;
       active = true;
+      samples = [{ x: startX, t: event.timeStamp }];
     };
     const onMove = (event) => {
-      if (!active || startY === null || window.scrollY > 0) return;
-      const delta = event.touches[0].clientY - startY;
-      const horizontal = startX === null ? 0 : event.touches[0].clientX - startX;
-      if (Math.abs(horizontal) > 10 && Math.abs(horizontal) > Math.abs(delta)) {
-        setSwipeOffset(Math.max(-46, Math.min(46, horizontal * .2)));
+      if (!active || startY === null) return;
+      const deltaY = event.touches[0].clientY - startY;
+      const deltaX = event.touches[0].clientX - startX;
+      if (!horizontal && Math.abs(deltaX) > 10 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2) horizontal = true;
+      if (horizontal) {
+        samples.push({ x: event.touches[0].clientX, t: event.timeStamp });
+        if (samples.length > 5) samples.shift();
+        const forward = deltaX < 0;
+        setDrag({ offset: deltaX, forward, level: dayLevel(forward) ? 'day' : 'week', phase: 'drag' });
         event.preventDefault();
         return;
       }
-      if (delta <= 0) { setPullDistance(0); return; }
-      distance = Math.min(108, delta * 0.46);
+      if (!canPull || Math.abs(deltaX) > Math.abs(deltaY)) return;
+      if (deltaY <= 0) { setPullDistance(0); return; }
+      distance = Math.min(108, deltaY * 0.46);
       setPullDistance(distance);
       event.preventDefault();
     };
     const onEnd = (event) => {
-      const horizontal = startX === null ? 0 : event.changedTouches[0].clientX - startX;
-      if (Math.abs(horizontal) > 70 && Math.abs(horizontal) > Math.abs(distance)) {
-        const nextWeek = plusDays(weekRef.current, horizontal > 0 ? -7 : 7);
-        const nextKey = dateKey(nextWeek);
-        setNavigationDirection(horizontal > 0 ? 'back' : 'forward');
-        setNavigationKey((value) => value + 1);
-        setWeekStart(nextWeek);
-        const url = new URL(window.location.href);
-        url.searchParams.set('week', nextKey);
-        window.history.pushState({ week: nextKey }, '', `${url.pathname}${url.search}${url.hash}`);
+      if (horizontal && startX !== null) {
+        const x = event.changedTouches[0].clientX;
+        const deltaX = x - startX;
+        const forward = deltaX < 0;
+        const first = samples[0];
+        const velocity = first ? (x - first.x) / Math.max(1, event.timeStamp - first.t) : 0;
+        const width = pagerRef.current?.offsetWidth || window.innerWidth;
+        const flung = forward ? velocity < -0.45 : velocity > 0.45;
+        const against = forward ? velocity > 0.45 : velocity < -0.45;
+        const level = dayLevel(forward) ? 'day' : 'week';
         reset();
+        if (!against && (flung || Math.abs(deltaX) > width * 0.3)) {
+          turningRef.current = true;
+          navigator.vibrate?.(8);
+          setDrag({ offset: forward ? -(width + PAGE_GAP) : width + PAGE_GAP, forward, level, phase: 'commit' });
+          window.setTimeout(() => { turnPageRef.current?.(forward, level); setDrag(null); turningRef.current = false; }, 330);
+        } else {
+          setDrag((current) => current && { ...current, offset: 0, phase: 'cancel' });
+          window.setTimeout(() => setDrag((current) => (current?.phase === 'cancel' ? null : current)), 420);
+        }
         return;
       }
       const shouldRefresh = active && distance >= 62;
@@ -436,16 +545,37 @@ function App() {
         setPullDistance(0);
       });
     };
+    const onCancel = () => { if (horizontal) setDrag(null); reset(); };
     document.addEventListener('touchstart', onStart, { passive: true });
     document.addEventListener('touchmove', onMove, { passive: false });
     document.addEventListener('touchend', onEnd, { passive: true });
-    document.addEventListener('touchcancel', reset, { passive: true });
+    document.addEventListener('touchcancel', onCancel, { passive: true });
     return () => {
       document.removeEventListener('touchstart', onStart);
       document.removeEventListener('touchmove', onMove);
       document.removeEventListener('touchend', onEnd);
-      document.removeEventListener('touchcancel', reset);
+      document.removeEventListener('touchcancel', onCancel);
     };
+  }, []);
+  // While the page is visible it asks every 20 s whether anything admin-made changed (a few bytes) and reloads only then.
+  useEffect(() => {
+    const check = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const { revision } = await (await fetch('/api/revision')).json();
+        const seen = Number(window.localStorage.getItem('isrm-revision') || 0);
+        window.localStorage.setItem('isrm-revision', String(revision));
+        if (seen && seen !== revision && !turningRef.current) {
+          monthCacheRef.current = {};
+          setMonthReload((value) => value + 1);
+          refreshRef.current?.(false, true);
+        }
+      } catch { /* offline: try again on the next tick */ }
+    };
+    check();
+    const timer = window.setInterval(check, 20_000);
+    document.addEventListener('visibilitychange', check);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', check); };
   }, []);
   useEffect(() => {
     const interval = window.setInterval(() => setNow(new Date()), 30_000);
@@ -479,17 +609,42 @@ function App() {
   const events = data?.events || [];
   const subscriptionUrl = `${window.location.origin}/api/calendar/subscription?programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`;
   const sourceIssues = data?.sources ? Object.entries(data.sources).filter(([, status]) => !status.ok) : [];
-  const navigateWeek = (nextWeek, direction) => {
+  // silent: the new page is already on screen from a finished swipe, so it must not slide in a second time.
+  const navigateWeek = (nextWeek, direction, silent = false) => {
     const nextKey = dateKey(nextWeek);
-    setNavigationDirection(direction);
-    setNavigationKey((value) => value + 1);
+    setRollDirection(direction);
+    setNavigationDirection(silent ? '' : direction);
+    if (!silent) setNavigationKey((value) => value + 1);
     setWeekStart(nextWeek);
     const url = new URL(window.location.href);
     url.searchParams.set('week', nextKey);
     window.history.pushState({ week: nextKey }, '', `${url.pathname}${url.search}${url.hash}`);
   };
-  const previousWeek = () => navigateWeek(plusDays(weekStart, -7), 'back');
-  const nextWeek = () => navigateWeek(plusDays(weekStart, 7), 'forward');
+  // In Mesec the arrows and swipes move a whole month, like the app.
+  const neighbourWeek = (forward) => (viewMode === 'month' ? firstWeekOfMonth(weekStart.getFullYear(), weekStart.getMonth() + (forward ? 1 : -1)) : plusDays(weekStart, forward ? 7 : -7));
+  const previousWeek = () => navigateWeek(neighbourWeek(false), 'back');
+  const nextWeek = () => navigateWeek(neighbourWeek(true), 'forward');
+  const changeView = (mode) => {
+    if (mode === viewMode) return;
+    setViewFade(true);
+    window.setTimeout(() => setViewFade(false), 420);
+    setViewMode(mode);
+  };
+  const selectTimelineDay = (index) => {
+    if (index === timelineDayIndex) return;
+    setDayShift({ direction: index > timelineDayIndex ? 'forward' : 'back', key: Date.now() });
+    setTimelineDayIndex(index);
+  };
+  liveRef.current = { viewMode, timelineDayIndex, dayCount: weekDays.length };
+  turnPageRef.current = (forward, level) => {
+    setDayShift(null);
+    if (level === 'day') { setTimelineDayIndex((index) => index + (forward ? 1 : -1)); return; }
+    if (viewMode === 'timeline') {
+      const previous = neighbourWeek(false);
+      setTimelineDayIndex(forward ? 0 : daysFor(previous, timetableCacheRef.current[cacheKeyFor(dateKey(previous), programmeYear, studentNumber)]?.payload.events || []).length - 1);
+    }
+    navigateWeek(neighbourWeek(forward), forward ? 'forward' : 'back', true);
+  };
   const install = async () => { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice; setInstallPrompt(null); setInstallGuideOpen(false); };
   const copySubscription = async () => {
     try { await navigator.clipboard.writeText(subscriptionUrl); setCopyStatus('Povezava kopirana'); }
@@ -513,20 +668,37 @@ function App() {
   };
   const openMonthDay = (day) => {
     const nextWeek = monday(day);
-    setTimelineDayIndex(Math.max(0, Math.min(4, day.getDay() - 1)));
-    setViewMode('timeline');
+    setTimelineDayIndex(Math.max(0, daysFor(monday(day), monthEvents).findIndex((candidate) => dateKey(candidate) === dateKey(day))));
+    changeView('timeline');
     navigateWeek(nextWeek, nextWeek < weekStart ? 'back' : 'forward');
   };
+  const saveAdminToken = (token) => {
+    setAdminToken(token);
+    try { if (token) window.localStorage.setItem('isrm-admin-token', token); else window.localStorage.removeItem('isrm-admin-token'); } catch { /* storage unavailable */ }
+  };
   const adminRequest = async (path, body) => {
-    const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-isrm-admin-password': adminDraft || adminPassword }, body: JSON.stringify(body || {}) });
+    const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-isrm-admin-token': adminToken }, body: JSON.stringify(body || {}) });
     const payload = await response.json();
+    // A revoked key (removed elsewhere, or the password changed) locks editing here as well.
+    if (response.status === 401) { saveAdminToken(''); throw new Error('Dostop za urejanje ni več veljaven. Znova vnesi geslo.'); }
     if (!response.ok) throw new Error(payload.error || 'Administratorska zahteva ni uspela.');
     return payload;
   };
   const unlockAdmin = async () => {
-    try { await adminRequest('/api/admin/verify'); setAdminPassword(adminDraft); window.localStorage.setItem('timetable-admin-password', adminDraft); setAdminUnlocked(true); setAdminError(''); }
-    catch (requestError) { setAdminError(requestError.message); }
+    try {
+      const response = await fetch('/api/admin/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: adminDraft, device: 'splet' }) });
+      const payload = await response.json();
+      if (!response.ok || !payload.token) throw new Error(payload.error || 'Prijava ni uspela.');
+      saveAdminToken(payload.token); setAdminDraft(''); setAdminError(''); setEditMode(true);
+    } catch (requestError) { setAdminError(requestError.message); }
   };
+  const removeAdminAccess = () => {
+    const token = adminToken;
+    saveAdminToken('');
+    fetch('/api/admin/logout', { method: 'POST', headers: { 'content-type': 'application/json', 'x-isrm-admin-token': token }, body: '{}' }).catch(() => undefined);
+  };
+  // Browsers that saved the password itself (before keys existed) forget it.
+  useEffect(() => { try { window.localStorage.removeItem('timetable-admin-password'); } catch { /* storage unavailable */ } }, []);
   const openEventComposer = () => {
     setAdminError('');
     setCustomEvent({ title: '', date: weekKey, start: '12:00', end: '13:00', room: '', programme: programmeYear });
@@ -559,12 +731,58 @@ function App() {
     catch (requestError) { setAdminError(requestError.message); }
   };
 
+  // Admin actions that change what everyone sees; each reloads so this view matches the server.
+  const runAdmin = async (path, body, after) => {
+    try { await adminRequest(path, body); setAdminError(''); after?.(); load(true); }
+    catch (requestError) { setAdminError(requestError.message); }
+  };
+  const deleteEvent = (event) => { if (window.confirm(`Izbrišem »${event.title}« za ves letnik?`)) runAdmin('/api/admin/events/delete', { id: event.id }, () => setSelectedEvent(null)); };
+  const setCancelled = (event, cancelled) => runAdmin('/api/admin/cancel', { programme: programmeYear, eventId: event.id, date: event.date, cancelled, note: cancelNote.trim() }, () => { setSelectedEvent(null); setCancelNote(''); });
+  const sendMessage = (submitEvent) => {
+    submitEvent?.preventDefault();
+    if (!messageDraft.text.trim()) { setAdminError('Vpiši sporočilo.'); return; }
+    runAdmin('/api/admin/announcements', { programme: programmeYear, text: messageDraft.text.trim(), days: messageDraft.days }, () => { setMessageComposerOpen(false); setMessageDraft({ text: '', days: 3 }); });
+  };
+  const deleteMessage = (message) => { if (window.confirm('Izbrišem sporočilo za vse?')) runAdmin('/api/admin/announcements/delete', { id: message.id }); };
+  const dismissMessage = (message) => {
+    const next = [...dismissedMessages, message.id].slice(-50);
+    setDismissedMessages(next);
+    try { window.localStorage.setItem('isrm-dismissed-messages', JSON.stringify(next)); } catch { /* storage unavailable */ }
+  };
+  const announcements = (data?.announcements || []).filter((message) => !dismissedMessages.includes(message.id));
+
+  // One page of the timetable. The live page and the neighbour shown during a swipe are drawn by the same code.
+  const renderPage = ({ week, days, items, monthItems, dayIndex, isLoading, live }) => {
+    const dayDrag = live && drag?.level === 'day' ? drag : null;
+    const timelineDay = (index, style, extra = '') => <div className={`day-page ${extra}`} style={style}><Timeline events={items} weekDays={days} onEventSelect={setSelectedEvent} mode="day" mobileDayIndex={index} /></div>;
+    return <div className={live && viewFade ? 'view-fade' : ''} key={live ? viewMode : undefined} style={{ '--days': days.length }}>
+      {viewMode === 'agenda' && <div className="weekday-tabs">{days.map((day, index) => <a key={dateKey(day)} href={`#day-${index}`} className={dateKey(day) === todayKey ? 'is-today' : ''}><b>{SHORT_BY_DAY[day.getDay()]}</b><span>{day.getDate()}</span></a>)}</div>}
+      {viewMode === 'timeline' && <PillGroup className="timeline-day-switch" selected={`${dateKey(week)}-${dayIndex}`} role="group" aria-label="Dan v časovnem pogledu">{days.map((day, index) => <button key={dateKey(day)} className={dayIndex === index ? 'is-selected' : ''} onClick={live ? () => selectTimelineDay(index) : undefined} aria-pressed={dayIndex === index}><b>{SHORT_BY_DAY[day.getDay()]}</b><span>{day.getDate()}</span></button>)}</PillGroup>}
+      {isLoading ? <div className="schedule-skeleton">{Array.from({ length: 5 }, (_, index) => <span key={index} />)}</div>
+        : viewMode === 'timeline' ? <div className="day-pager">
+          {timelineDay(dayIndex, dayDrag ? { transform: `translateX(${dayDrag.offset}px)` } : undefined, live && dayShift ? `day-enter day-enter--${dayShift.direction}` : '')}
+          {dayDrag && timelineDay(dayIndex + (dayDrag.forward ? 1 : -1), { transform: `translateX(calc(${dayDrag.offset}px ${dayDrag.forward ? '+' : '-'} (100% + ${PAGE_GAP}px)))` }, 'day-page--neighbour')}
+        </div>
+        : viewMode === 'week' ? <Timeline events={items} weekDays={days} onEventSelect={setSelectedEvent} mode="week" />
+        : viewMode === 'month' ? <MonthView events={monthItems} month={week} onEventSelect={setSelectedEvent} onDaySelect={openMonthDay} />
+        : <div className="agenda">
+          {days.map((day, index) => {
+            const dayEvents = items.filter((event) => event.date === dateKey(day));
+            return <section className="agenda-day" id={live ? `day-${index}` : undefined} key={dateKey(day)}>
+              <header><span>{FULL_BY_DAY[day.getDay()]}</span><time>{formatDate(day)}</time></header>
+              {dayEvents.length ? dayEvents.map((event) => <EventItem key={event.id} event={event} now={now} onPreview={setSelectedEvent} />) : <p className="no-events">Brez obveznosti</p>}
+            </section>;
+          })}
+        </div>}
+    </div>;
+  };
+
   const pullOffset = Math.min(72, pullDistance) - 82;
   return <main className="app-shell">
     {updateNotice && <aside className="update-sheet" role="status" aria-live="polite"><div><b>The app has been updated to {APP_VERSION}.</b></div><button onClick={() => setUpdateNotice(false)} aria-label="Close update notice"><Icon name="close" size={17} /></button></aside>}
     {(pullDistance > 0 || pullRefreshing) && <div className={`pull-refresh ${pullRefreshing ? 'is-refreshing' : ''} ${pullDistance >= 62 ? 'is-ready' : ''}`} style={{ transform: `translate(-50%, ${pullOffset}px)` }} role="status" aria-live="polite"><span className="pull-refresh__icon"><Icon name="refresh" size={16} /></span><span>{pullRefreshing ? 'Osvežujem urnik' : pullDistance >= 62 ? 'Spusti za osvežitev' : 'Povleci za osvežitev'}</span></div>}
     <header className="topbar">
-      <a className="brand" href="#top" aria-label="IŠRM, začetek"><span className="brand__mark"><Icon name="grid" size={19} /></span><span>IŠRM<br /><small>{programmeYear}. letnik · FRI program</small></span></a>
+      <a className="brand" href="#top" aria-label="IŠRM, začetek"><span className="brand__mark"><Icon name="grid" size={19} /></span><span>IŠRM<br /><small>{programmeYear}. letnik · FRI program{canEdit && <b className="edit-flag"> · urejanje</b>}</small></span></a>
       <div className="topbar__right">
         <button className="theme-toggle" onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')} aria-pressed={theme === 'dark'} aria-label={theme === 'dark' ? 'Vklopi svetli videz' : 'Vklopi temni videz'}><Icon name="moon" size={16} /><span>{theme === 'dark' ? 'Svetlo' : 'Temno'}</span></button>
         <div className="export-wrap"><button className="export-button" onClick={() => setExportOpen((open) => !open)} aria-expanded={exportOpen}><Icon name="calendar" size={16} /><span>Koledar .ics</span></button>{exportOpen && <div className="export-menu" role="dialog" aria-label="Izvoz koledarja"><a href={`/api/calendar?week=${encodeURIComponent(weekKey)}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`} download={`isrm-${programmeYear}-letnik-${weekKey}.ics`} onClick={() => setExportOpen(false)}>Prenesi ta teden</a><button onClick={copySubscription}>{studentNumber ? 'Kopiraj osebno povezavo' : 'Kopiraj naročniško povezavo'}</button><small>{copyStatus || (studentNumber ? 'Vključene so tvoje FRI vaje.' : 'Povezava se samodejno posodablja.')}</small></div>}</div>
@@ -575,8 +793,8 @@ function App() {
             <div className="year-switch" role="group" aria-label="Letnik programa">{['1', '2', '3'].map((year) => <button key={year} className={programmeYear === year ? 'is-selected' : ''} onClick={() => setProgrammeYear(year)} aria-pressed={programmeYear === year}>{year}. letnik</button>)}</div>
             <label className="student-number"><b>Vpisna številka</b><input value={studentNumberDraft} onChange={(event) => setStudentNumberDraft(event.target.value.replace(/\D/g, ''))} inputMode="numeric" autoComplete="off" placeholder="Za osebni urnik" /><small>Izbere tvojo FRI skupino pri prekrivanju vaj.</small></label>
             <div className="settings-actions"><button onClick={saveStudentNumber}>Shrani</button>{studentNumber && <button onClick={() => { setStudentNumberDraft(''); setStudentNumber(''); window.localStorage.removeItem('timetable-student-number'); }}>Odstrani</button>}</div>
-            <label className="student-number"><b>Admin</b><input type="password" value={adminDraft} onChange={(event) => setAdminDraft(event.target.value)} autoComplete="current-password" placeholder="Geslo za urejanje" /></label>
-            {!adminUnlocked ? <div className="settings-actions"><button onClick={unlockAdmin}>Odpri urejanje</button></div> : <p className="admin-unlocked">Urejanje je odklenjeno. Dodaj dogodek z gumbom + spodaj.</p>}
+            {!adminUnlocked ? <><label className="student-number"><b>Admin</b><input type="password" value={adminDraft} onChange={(event) => setAdminDraft(event.target.value)} autoComplete="current-password" placeholder="Geslo za urejanje" /></label><div className="settings-actions"><button onClick={unlockAdmin}>Odpri urejanje</button></div></>
+              : <><label className={`edit-switch ${editMode ? 'is-on' : ''}`}><span><b>Urejanje urnika</b><small>{editMode ? 'Vključeno: + spodaj, brisanje in odpadla predavanja.' : 'Izključeno: urnika ni mogoče po nesreči spremeniti.'}</small></span><input type="checkbox" role="switch" checked={editMode} onChange={(event) => setEditMode(event.target.checked)} /><i aria-hidden="true" /></label><small>Ob vsakem odprtju strani se urejanje izklopi. Shranjen je dostop, geslo ne.</small><div className="settings-actions"><button onClick={removeAdminAccess}>Odstrani dostop</button></div></>}
             {(studentNumberError || adminError) && <p className="settings-error" role="alert">{studentNumberError || adminError}</p>}
             <small>{studentNumber ? 'Osebni urnik je vključen.' : 'Shranjeno v tej napravi'}</small>
           </div>}
@@ -589,35 +807,40 @@ function App() {
     <div className="week-control-row">
     <section className="week-control" aria-label="Izbira tedna">
       <button className="week-arrow" onClick={previousWeek} aria-label="Prejšnji teden"><Icon name="arrowLeft" /></button>
-      <button className="week-title" onClick={() => navigateWeek(monday(), 'back')}><span>{formatDate(weekDays[0])} — {formatDate(weekDays[4])}</span><small>Osveženo {formatFetched(data?.fetchedAt)}</small></button>
+      <button className="week-title" onClick={() => navigateWeek(currentWeek(), currentWeek() < weekStart ? 'back' : 'forward')}><span key={viewMode === 'month' ? monthKey : weekKey} className={rollDirection ? `roll roll--${rollDirection}` : ''}>{viewMode === 'month' ? new Intl.DateTimeFormat('sl-SI', { month: 'long', year: 'numeric' }).format(weekStart) : <>{formatDate(weekStart)} — {formatDate(plusDays(weekStart, 4))}</>}</span><small>Osveženo {formatFetched(data?.fetchedAt)}</small></button>
       <button className="week-arrow" onClick={nextWeek} aria-label="Naslednji teden"><Icon name="arrowRight" /></button>
     </section>
-    <button className="today-button" onClick={() => navigateWeek(monday(), 'back')} disabled={weekKey === dateKey(monday())} aria-label="Pojdi na trenutni teden">Danes</button>
+    <button className="today-button" onClick={() => navigateWeek(currentWeek(), currentWeek() < weekStart ? 'back' : 'forward')} disabled={weekKey === dateKey(currentWeek())} aria-label="Pojdi na trenutni teden">Danes</button>
     </div>
 
+    {announcements.map((message) => <aside key={message.id} className="announcement" role="status"><div><small>Sporočilo · {new Intl.DateTimeFormat('sl-SI', { day: 'numeric', month: 'short' }).format(new Date(message.createdAt))}</small><p>{message.text}</p>{canEdit && <button className="announcement__delete" onClick={() => deleteMessage(message)}>Izbriši za vse</button>}</div><button className="announcement__close" onClick={() => dismissMessage(message)} aria-label="Skrij sporočilo"><Icon name="close" size={16} /></button></aside>)}
     {(error || sourceIssues.length > 0) && <div className="notice" role="status">{error || `Pozor: ${sourceIssues.map(([source, status]) => `${source} (${status.message || 'vir ni dosegljiv'})`).join('; ')}. Prikazani so zadnji uspešno shranjeni podatki.`}</div>}
 
-    <section key={`${weekKey}-${navigationKey}`} className={`schedule week-content week-content--${navigationDirection} ${swipeOffset ? 'is-swiping' : ''}`} style={{ '--week-swipe': `${swipeOffset}px` }} aria-label="Tedenski urnik">
-      <div className="schedule__heading"><h2>Urnik</h2><div><span>{events.length} {events.length === 1 ? 'obveznost' : 'obveznosti'}</span><div className="view-modes" role="group" aria-label="Prikaz urnika"><button className={viewMode === 'agenda' ? 'is-selected' : ''} onClick={() => setViewMode('agenda')} aria-pressed={viewMode === 'agenda'}>Seznam</button><button className={viewMode === 'timeline' ? 'is-selected' : ''} onClick={() => setViewMode('timeline')} aria-pressed={viewMode === 'timeline'}>Časovni</button><button className={viewMode === 'week' ? 'is-selected' : ''} onClick={() => setViewMode('week')} aria-pressed={viewMode === 'week'}>Teden</button><button className={viewMode === 'month' ? 'is-selected' : ''} onClick={() => setViewMode('month')} aria-pressed={viewMode === 'month'}>Mesec</button></div></div></div>
-      {viewMode === 'agenda' && <div className="weekday-tabs">{weekDays.map((day, index) => <a key={dateKey(day)} href={`#day-${index}`} className={dateKey(day) === todayKey ? 'is-today' : ''}><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></a>)}</div>}
-      {viewMode === 'timeline' && <div className="timeline-day-switch" role="group" aria-label="Dan v časovnem pogledu">{weekDays.map((day, index) => <button key={dateKey(day)} className={timelineDayIndex === index ? 'is-selected' : ''} onClick={() => setTimelineDayIndex(index)} aria-pressed={timelineDayIndex === index}><b>{DAY_NAMES[index]}</b><span>{day.getDate()}</span></button>)}</div>}
-      {loading && !data ? <div className="schedule-skeleton">{Array.from({ length: 5 }, (_, index) => <span key={index} />)}</div> : viewMode === 'timeline' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="day" mobileDayIndex={timelineDayIndex} /> : viewMode === 'week' ? <Timeline events={events} weekDays={weekDays} onEventSelect={setSelectedEvent} mode="week" /> : viewMode === 'month' ? <MonthView events={monthEvents} month={weekStart} onEventSelect={setSelectedEvent} onDaySelect={openMonthDay} /> : <div className="agenda">
-        {weekDays.map((day, index) => {
-          const dayEvents = events.filter((event) => event.date === dateKey(day));
-          return <section className="agenda-day" id={`day-${index}`} key={dateKey(day)}>
-            <header><span>{FULL_DAY_NAMES[index]}</span><time>{formatDate(day)}</time></header>
-            {dayEvents.length ? dayEvents.map((event) => <EventItem key={event.id} event={event} now={now} onPreview={setSelectedEvent} />) : <p className="no-events">Brez obveznosti</p>}
-          </section>;
-        })}
-      </div>}
+    <section className="schedule" aria-label="Tedenski urnik">
+      <div className="schedule__heading"><h2>Urnik</h2><div><span>{events.length} {events.length === 1 ? 'obveznost' : 'obveznosti'}</span><PillGroup className="view-modes" selected={viewMode} role="group" aria-label="Prikaz urnika">{[['agenda', 'Seznam'], ['timeline', 'Časovni'], ['week', 'Teden'], ['month', 'Mesec']].map(([mode, label]) => <button key={mode} className={viewMode === mode ? 'is-selected' : ''} onClick={() => changeView(mode)} aria-pressed={viewMode === mode}>{label}</button>)}</PillGroup></div></div>
+      <div ref={pagerRef} className={`pager ${drag ? `is-${drag.phase}` : ''}`}>
+        <div key={`${weekKey}-${navigationKey}`} className={`pager__page week-content week-content--${navigationDirection}`} style={drag?.level === 'week' ? { transform: `translateX(${drag.offset}px)`, opacity: drag.phase === 'commit' ? 0.4 : 1 - Math.min(1, Math.abs(drag.offset) / 900) } : undefined}>
+          {renderPage({ week: weekStart, days: weekDays, items: events, monthItems: monthEvents, dayIndex: timelineDayIndex, isLoading: loading && !data, live: true })}
+        </div>
+        {drag?.level === 'week' && (() => {
+          const next = neighbourWeek(drag.forward);
+          const cachedWeek = timetableCacheRef.current[cacheKeyFor(dateKey(next), programmeYear, studentNumber)];
+          const cachedMonth = monthCacheRef.current[cacheKeyFor(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`, programmeYear, studentNumber)];
+          return <div className="pager__page pager__page--neighbour" aria-hidden="true" style={{ transform: `translateX(calc(${drag.offset}px ${drag.forward ? '+' : '-'} (100% + ${PAGE_GAP}px)))` }}>
+            {renderPage({ week: next, days: daysFor(next, cachedWeek?.payload.events || []), items: cachedWeek?.payload.events || [], monthItems: cachedMonth?.payload.events || [], dayIndex: drag.forward ? 0 : daysFor(next, cachedWeek?.payload.events || []).length - 1, isLoading: viewMode === 'month' ? !cachedMonth : !cachedWeek, live: false })}
+          </div>;
+        })()}
+      </div>
     </section>
     </div>
 
-    {selectedEvent && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setSelectedEvent(null)}><section className={`lesson-dialog lesson-dialog--${selectedEvent.source.toLowerCase()}`} role="dialog" aria-modal="true" aria-label={`Podrobnosti: ${selectedEvent.title}`} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>{selectedEvent.source}</b><i>{selectedEvent.source === 'FRI' ? 'Računalništvo in informatika' : selectedEvent.source === 'FMF' ? 'Matematika in fizika' : 'Skupni dogodek'}</i></span><span className="lesson-type">{selectedEvent.type}</span><h2>{selectedEvent.title}</h2></div><button className="lesson-close" onClick={() => setSelectedEvent(null)} aria-label="Zapri podrobnosti"><Icon name="close" size={18} /></button></header><div className="lesson-details"><div><b>Termin</b><span>{new Intl.DateTimeFormat('sl-SI', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${selectedEvent.date}T12:00:00`))}</span><strong>{selectedEvent.start}–{selectedEvent.end}</strong></div><div><b>Prostor</b><strong>{selectedEvent.room || 'Ni podatka'}</strong></div><div><b>Izvajalec</b><strong>{selectedEvent.teacher || 'Ni podatka'}</strong></div></div></section></div>}
+    {selectedEvent && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setSelectedEvent(null)}><section className={`lesson-dialog lesson-dialog--${selectedEvent.source.toLowerCase()}`} role="dialog" aria-modal="true" aria-label={`Podrobnosti: ${selectedEvent.title}`} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>{selectedEvent.source}</b><i>{selectedEvent.source === 'FRI' ? 'Računalništvo in informatika' : selectedEvent.source === 'FMF' ? 'Matematika in fizika' : 'Skupni dogodek'}</i></span><span className="lesson-type">{selectedEvent.type}</span><h2>{selectedEvent.title}</h2></div><button className="lesson-close" onClick={() => setSelectedEvent(null)} aria-label="Zapri podrobnosti"><Icon name="close" size={18} /></button></header><div className="lesson-details"><div><b>Termin</b><span>{new Intl.DateTimeFormat('sl-SI', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${selectedEvent.date}T12:00:00`))}</span><strong>{selectedEvent.start}–{selectedEvent.end}</strong></div><div><b>Prostor</b><strong>{selectedEvent.room || 'Ni podatka'}</strong></div><div><b>Izvajalec</b><strong>{selectedEvent.teacher || 'Ni podatka'}</strong></div></div>{selectedEvent.cancelled && <p className="lesson-cancelled">{['Ta termin odpade', selectedEvent.cancelNote].filter(Boolean).join(' · ')}</p>}{canEdit && <div className="lesson-admin"><b>Urejanje · admin</b>{!['FRI', 'FMF'].includes(selectedEvent.source) ? <button className="is-danger" onClick={() => deleteEvent(selectedEvent)}>Izbriši dogodek</button> : selectedEvent.cancelled ? <button onClick={() => setCancelled(selectedEvent, false)}>Prekliči odpad · predavanje bo</button> : <><input value={cancelNote} onChange={(event) => setCancelNote(event.target.value)} placeholder="Opomba (neobvezno)" maxLength={160} /><button className="is-danger" onClick={() => setCancelled(selectedEvent, true)}>Označi kot odpadlo</button></>}{adminError && <p className="settings-error" role="alert">{adminError}</p>}</div>}</section></div>}
 
-    {adminUnlocked && <button className="event-fab" onClick={openEventComposer} aria-label="Dodaj dogodek"><Icon name="plus" size={21} /><span>Dodaj</span></button>}
+    {canEdit && <button className="event-fab" onClick={() => setAdminMenuOpen(true)} aria-label="Dodaj"><Icon name="plus" size={21} /><span>Dodaj</span></button>}
     {eventComposerOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setEventComposerOpen(false)}><section className="lesson-dialog event-composer" role="dialog" aria-modal="true" aria-labelledby="event-composer-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>{programmeYear}. letnik</i></span><h2 id="event-composer-title">Dodaj dogodek</h2></div><button className="lesson-close" onClick={() => setEventComposerOpen(false)} aria-label="Zapri dodajanje dogodka"><Icon name="close" size={18} /></button></header><p>Dogodek bo viden celotnemu {programmeYear}. letniku v prikazanem tednu.</p><form onSubmit={addCustomEvent}><label><b>Naslov</b><input value={customEvent.title} onChange={(event) => setCustomEvent((value) => ({ ...value, title: event.target.value }))} placeholder="Npr. Izpit" autoFocus required /></label><label><b>Datum</b><input type="date" value={customEvent.date} onChange={(event) => setCustomEvent((value) => ({ ...value, date: event.target.value }))} required /></label><div className="event-composer__times"><label><b>Začetek</b><input type="time" value={customEvent.start} onChange={(event) => setCustomEvent((value) => ({ ...value, start: event.target.value }))} required /></label><label><b>Konec</b><input type="time" value={customEvent.end} onChange={(event) => setCustomEvent((value) => ({ ...value, end: event.target.value }))} required /></label></div><label><b>Lokacija <small>neobvezno</small></b><input value={customEvent.room} onChange={(event) => setCustomEvent((value) => ({ ...value, room: event.target.value }))} placeholder="Npr. P.01" /></label>{adminError && <p className="settings-error" role="alert">{adminError}</p>}<div className="event-composer__actions"><button type="button" onClick={() => setEventComposerOpen(false)}>Prekliči</button><button type="submit">Dodaj dogodek</button></div></form></section></div>}
 
+    {adminMenuOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setAdminMenuOpen(false)}><section className="lesson-dialog admin-menu" role="dialog" aria-modal="true" aria-label="Urejanje" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>{programmeYear}. letnik</i></span><h2>Kaj želiš dodati?</h2></div><button className="lesson-close" onClick={() => setAdminMenuOpen(false)} aria-label="Zapri"><Icon name="close" size={18} /></button></header><div className="admin-menu__actions"><button onClick={() => { setAdminMenuOpen(false); openEventComposer(); }}>Nov dogodek</button><button onClick={() => { setAdminMenuOpen(false); setAdminError(''); setMessageComposerOpen(true); }}>Sporočilo za letnik</button></div><p>Predavanje označiš kot odpadlo tako, da ga klikneš na urniku.</p></section></div>}
+    {messageComposerOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setMessageComposerOpen(false)}><section className="lesson-dialog event-composer" role="dialog" aria-modal="true" aria-labelledby="message-composer-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>{programmeYear}. letnik</i></span><h2 id="message-composer-title">Novo sporočilo</h2></div><button className="lesson-close" onClick={() => setMessageComposerOpen(false)} aria-label="Zapri"><Icon name="close" size={18} /></button></header><p>Prikaže se na vrhu urnika vsem v {programmeYear}. letniku.</p><form onSubmit={sendMessage}><label><b>Sporočilo</b><textarea value={messageDraft.text} onChange={(event) => setMessageDraft((value) => ({ ...value, text: event.target.value }))} rows={4} maxLength={500} placeholder="Npr. Jutri predavanje iz Analize odpade." autoFocus required /></label><div className="message-days" role="group" aria-label="Vidno">{[[1, '1 dan'], [3, '3 dni'], [7, '1 teden'], [14, '2 tedna']].map(([days, label]) => <button type="button" key={days} className={messageDraft.days === days ? 'is-selected' : ''} onClick={() => setMessageDraft((value) => ({ ...value, days }))}>{label}</button>)}</div>{adminError && <p className="settings-error" role="alert">{adminError}</p>}<div className="event-composer__actions"><button type="button" onClick={() => setMessageComposerOpen(false)}>Prekliči</button><button type="submit">Pošlji</button></div></form></section></div>}
     <footer className="footer"><span>IŠRM · FRI × FMF</span><div className="footer-links">{isAndroidDevice() && androidRelease?.androidApkUrl ? <a className="footer-install" href={androidRelease.androidApkUrl}><Icon name="download" size={14} />Prenesi APK</a> : <button className="footer-install" onClick={installPrompt ? install : () => setInstallGuideOpen(true)}><Icon name="download" size={14} />Namesti PWA</button>}<a href="/privacy">Zasebnost</a></div><div className="source-statuses">{['FRI', 'FMF'].map((source) => <span key={source} className={data?.sources?.[source]?.ok ? 'ok' : 'warning'}><b />{source}</span>)}</div></footer>
     {isAndroidDevice() && androidRelease?.androidApkUrl && !installDismissed && <aside className="install-banner android-install-banner" aria-label="Prenos Android aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM za Android</strong><p>Native aplikacija {androidRelease.androidVersion} z delovanjem brez povezave in pripomočki.</p></div><a className="install-banner__action" href={androidRelease.androidApkUrl}><Icon name="download" size={16} />Prenesi</a><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
     {isIosDevice() && !isStandaloneApp() && !installDismissed && <aside className="install-banner" aria-label="Namestitev IŠRM na iPhone"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>{isBraveBrowser() ? 'Brave na iPhonu ni zanesljiv za PWA. Odpri stran v Chromu ali Safariju.' : 'V Safariju ali Chromu izberi Deli in nato Add to Home Screen.'}</p></div><button className="install-banner__action" onClick={() => setInstallGuideOpen(true)}><Icon name="download" size={16} />Navodila</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}

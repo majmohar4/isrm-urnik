@@ -5,3 +5,4 @@ data
 android/.gradle
 android/.kotlin
 android/app/build
+releases

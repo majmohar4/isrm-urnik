@@ -21,6 +21,8 @@ import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 object WidgetRefresh {
@@ -47,13 +49,21 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     }
 
     private fun render(id: Int, config: WidgetConfig) {
-        val events = TimetableRepository(applicationContext).refresh(LocalDate.now().with(DayOfWeek.MONDAY), config.programme, config.student)
+        val repo = TimetableRepository(applicationContext)
+        val monday = LocalDate.now().with(DayOfWeek.MONDAY)
+        val events = repo.refresh(monday, config.programme, config.student)
         val today = LocalDate.now().toString()
-        val now = LocalDateTime.now()
-        val next = events.firstOrNull { it.date >= today && LocalDateTime.parse("${it.date}T${it.end}") > now }
+        // After Friday's last lesson the next one is in the following week, so look there too.
+        val next = upcoming(events) ?: runCatching { upcoming(repo.refresh(monday.plusWeeks(1), config.programme, config.student)) }.getOrNull()
         val views = baseViews(id, config)
         if (config.mode == "day") renderDay(views, events.filter { it.date == today }) else renderNext(views, next)
         AppWidgetManager.getInstance(applicationContext).updateAppWidget(id, views)
+    }
+
+    private fun upcoming(events: List<Lesson>): Lesson? {
+        val now = LocalDateTime.now()
+        // A cancelled lecture is not "next": skip to the first one that actually happens.
+        return events.firstOrNull { !it.cancelled && runCatching { LocalDateTime.parse("${it.date}T${it.end}") > now }.getOrDefault(false) }
     }
 
     private fun baseViews(id: Int, config: WidgetConfig) = RemoteViews(applicationContext.packageName, R.layout.widget_timetable).apply {
@@ -73,7 +83,8 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             setTextViewText(R.id.widget_primary, "Ni naslednje obveznosti")
             setTextViewText(R.id.widget_secondary, "Urnik se samodejno osveži")
         } else {
-            setTextViewText(R.id.widget_time, next.start)
+            val date = LocalDate.parse(next.date)
+            setTextViewText(R.id.widget_time, if (date == LocalDate.now()) next.start else "${date.format(DateTimeFormatter.ofPattern("EEE", Locale("sl", "SI"))).replaceFirstChar { it.titlecase() }} ${next.start}")
             setTextViewText(R.id.widget_primary, next.title)
             setTextViewText(R.id.widget_secondary, "${next.room.ifBlank { "Lokacija ni znana" }} · ${next.source}")
         }
@@ -83,7 +94,7 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         setViewVisibility(R.id.widget_day_content, View.VISIBLE)
         setTextViewText(R.id.widget_title, "DANES · IŠRM")
         val slots = intArrayOf(R.id.widget_day_event_1, R.id.widget_day_event_2, R.id.widget_day_event_3)
-        today.take(3).forEachIndexed { index, event -> setViewVisibility(slots[index], View.VISIBLE); setTextViewText(slots[index], "${event.start}  ${event.title} · ${event.room.ifBlank { event.source }}") }
+        today.take(3).forEachIndexed { index, event -> setViewVisibility(slots[index], View.VISIBLE); setTextViewText(slots[index], if (event.cancelled) "${event.start}  ODPADE · ${event.title}" else "${event.start}  ${event.title} · ${event.room.ifBlank { event.source }}") }
         for (index in today.take(3).size until slots.size) setViewVisibility(slots[index], View.GONE)
         setTextViewText(R.id.widget_day_footer, when {
             today.isEmpty() -> "Danes ni obveznosti"
@@ -96,7 +107,7 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val config = WidgetPrefs.get(applicationContext, id)
         val cached = TimetableRepository(applicationContext).cached(LocalDate.now().with(DayOfWeek.MONDAY), config.programme, config.student)
         val views = baseViews(id, config)
-        renderNext(views, cached.firstOrNull { it.date >= LocalDate.now().toString() })
+        renderNext(views, upcoming(cached))
         views.setTextViewText(R.id.widget_title, "IŠRM · SHRANJEN URNIK")
         if (cached.isEmpty()) {
             views.setTextViewText(R.id.widget_primary, "Urnika trenutno ni mogoče naložiti")

@@ -1,1 +1,1 @@
-<resources><string name="settings">Nastavitve urnika</string><string name="previous_week">Prejšnji teden</string><string name="next_week">Naslednji teden</string><string name="refresh">Osveži urnik</string></resources>
+<resources><string name="settings">Nastavitve urnika</string><string name="previous_week">Prejšnji teden</string><string name="next_week">Naslednji teden</string><string name="refresh">Osveži urnik</string><string name="theme">Svetli ali temni videz</string><string name="calendar">Koledar .ics</string><string name="add_event">Dodaj dogodek</string></resources>
