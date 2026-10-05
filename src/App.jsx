@@ -157,17 +157,31 @@ function PillGroup({ className, selected, children, ...rest }) {
   return <div ref={ref} className={`${className} has-pill`} {...rest}><span className="pill" style={style || { opacity: 0 }} aria-hidden="true" />{children}</div>;
 }
 
+// Local "YYYY-MM-DDTHH:MM", comparable with a lesson's date + start/end (comparing with toISOString(), which is UTC,
+// put the "now" highlight two hours off in Slovenia).
+// Same readable lesson types as the Android app.
+const TYPE_NAMES = { P: 'Predavanje', AV: 'Avditorne vaje', LV: 'Laboratorijske vaje', V: 'Vaje', S: 'Seminar', SEM: 'Seminar' };
+const typeName = (type = '') => TYPE_NAMES[type.toUpperCase()] || type;
+
+function localStamp(date) {
+  return `${dateKey(date)}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
 function EventItem({ event, now, onPreview }) {
-  const active = now && `${event.date}T${event.start}:00` <= now.toISOString() && `${event.date}T${event.end}:00` > now.toISOString();
-  return <article className={`event event--${event.source.toLowerCase()} ${active && !event.cancelled ? 'event--active' : ''} ${event.cancelled ? 'is-cancelled' : ''}`}>
+  const stamp = now ? localStamp(now) : '';
+  const active = !event.cancelled && stamp && `${event.date}T${event.start}` <= stamp && `${event.date}T${event.end}` > stamp;
+  const past = stamp && `${event.date}T${event.end}` <= stamp;
+  const progress = active ? Math.min(1, Math.max(0, (timeToMinutes(stamp.slice(11)) - timeToMinutes(event.start)) / Math.max(1, timeToMinutes(event.end) - timeToMinutes(event.start)))) : 0;
+  return <article className={`event event--${event.source.toLowerCase()} ${active ? 'event--active' : ''} ${past ? 'is-past' : ''} ${event.cancelled ? 'is-cancelled' : ''}`}>
     <button className="event__summary" onClick={() => onPreview(event)} aria-label={`Podrobnosti: ${event.title}`}>
-      <time className="event__time">{event.start}<span>{event.end}</span></time>
-      <div className="event__body">
-        <div className="event__line"><h3>{event.title}</h3><span className="event__type">{event.cancelled ? 'Odpade' : event.type}</span></div>
-        {event.cancelled ? <p className="cancel-note">{['Odpade', event.cancelNote].filter(Boolean).join(' · ')}</p> : <p><Icon name="pin" size={15} />{event.room}</p>}
-      </div>
-      <span className="event__source">{event.source}</span>
+      <span className="event__time"><b>{event.start}</b><span>{event.end}</span></span>
+      <span className="event__body">
+        <strong className="event__title">{event.title}</strong>
+        {event.cancelled ? <span className="cancel-note">{['Odpade', event.cancelNote].filter(Boolean).join(' · ')}</span> : <span className="event__room"><Icon name="pin" size={14} />{event.room || 'Prostor ni znan'}</span>}
+        <span className="event__tags"><i className="tag tag--source">{event.source || 'IŠRM'}</i>{event.type && <i className="tag">{event.type}</i>}{active && <i className="tag tag--now">ZDAJ</i>}{event.cancelled && <i className="tag tag--cancel">ODPADE</i>}</span>
+      </span>
     </button>
+    {active && <span className="event__progress" style={{ '--progress': progress }} aria-hidden="true" />}
   </article>;
 }
 
@@ -315,7 +329,8 @@ function App() {
   const [viewMode, setViewMode] = useState(() => window.localStorage.getItem('timetable-view') || 'agenda');
   // Mon–Fri only: on weekends Časovni opens on Monday of the coming week (getDay() - 1 used to give 5 on Saturday, an empty page).
   const [timelineDayIndex, setTimelineDayIndex] = useState(() => { const day = new Date().getDay(); return day === 0 || day === 6 ? 0 : day - 1; });
-  const [theme, setTheme] = useState(() => window.localStorage.getItem('timetable-theme') || 'dark');
+  // 'system' follows the device, like the Android app; 'light' and 'dark' are fixed choices.
+  const [theme, setTheme] = useState(() => window.localStorage.getItem('timetable-theme') || 'system');
   const [programmeYear, setProgrammeYear] = useState(() => window.localStorage.getItem('timetable-programme-year') || '1');
   const [studentNumber, setStudentNumber] = useState(() => window.localStorage.getItem('timetable-student-number') || '');
   const [studentNumberDraft, setStudentNumberDraft] = useState(() => window.localStorage.getItem('timetable-student-number') || '');
@@ -337,7 +352,6 @@ function App() {
   const [cancelNote, setCancelNote] = useState('');
   const [dismissedMessages, setDismissedMessages] = useState(() => { try { return JSON.parse(window.localStorage.getItem('isrm-dismissed-messages') || '[]'); } catch { return []; } });
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [exportOpen, setExportOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
   const [installDismissed, setInstallDismissed] = useState(false);
   const [updateNotice, setUpdateNotice] = useState(() => window.sessionStorage.getItem('isrm-pwa-updated') === '1');
@@ -587,8 +601,12 @@ function App() {
     if (updateNotice) window.sessionStorage.removeItem('isrm-pwa-updated');
   }, [updateNotice]);
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () => { document.documentElement.dataset.theme = theme === 'system' ? (media.matches ? 'dark' : 'light') : theme; };
+    apply();
     window.localStorage.setItem('timetable-theme', theme);
+    media.addEventListener('change', apply);
+    return () => media.removeEventListener('change', apply);
   }, [theme]);
   useEffect(() => { window.localStorage.setItem('timetable-programme-year', programmeYear); }, [programmeYear]);
   useEffect(() => {
@@ -769,7 +787,7 @@ function App() {
           {days.map((day, index) => {
             const dayEvents = items.filter((event) => event.date === dateKey(day));
             return <section className="agenda-day" id={live ? `day-${index}` : undefined} key={dateKey(day)}>
-              <header><span>{FULL_BY_DAY[day.getDay()]}</span><time>{formatDate(day)}</time></header>
+              <header><b>{FULL_BY_DAY[day.getDay()].replace(/^./, (letter) => letter.toUpperCase())}</b><time>{formatDate(day)}</time>{dateKey(day) === todayKey && <i className="tag tag--today">DANES</i>}</header>
               {dayEvents.length ? dayEvents.map((event) => <EventItem key={event.id} event={event} now={now} onPreview={setSelectedEvent} />) : <p className="no-events">Brez obveznosti</p>}
             </section>;
           })}
@@ -778,36 +796,19 @@ function App() {
   };
 
   const pullOffset = Math.min(72, pullDistance) - 82;
-  return <main className="app-shell">
+  return <main className="app-shell skin">
     {updateNotice && <aside className="update-sheet" role="status" aria-live="polite"><div><b>The app has been updated to {APP_VERSION}.</b></div><button onClick={() => setUpdateNotice(false)} aria-label="Close update notice"><Icon name="close" size={17} /></button></aside>}
     {(pullDistance > 0 || pullRefreshing) && <div className={`pull-refresh ${pullRefreshing ? 'is-refreshing' : ''} ${pullDistance >= 62 ? 'is-ready' : ''}`} style={{ transform: `translate(-50%, ${pullOffset}px)` }} role="status" aria-live="polite"><span className="pull-refresh__icon"><Icon name="refresh" size={16} /></span><span>{pullRefreshing ? 'Osvežujem urnik' : pullDistance >= 62 ? 'Spusti za osvežitev' : 'Povleci za osvežitev'}</span></div>}
-    <header className="topbar">
-      <a className="brand" href="#top" aria-label="IŠRM, začetek"><span className="brand__mark"><Icon name="grid" size={19} /></span><span>IŠRM<br /><small>{programmeYear}. letnik · FRI program{canEdit && <b className="edit-flag"> · urejanje</b>}</small></span></a>
-      <div className="topbar__right">
-        <button className="theme-toggle" onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')} aria-pressed={theme === 'dark'} aria-label={theme === 'dark' ? 'Vklopi svetli videz' : 'Vklopi temni videz'}><Icon name="moon" size={16} /><span>{theme === 'dark' ? 'Svetlo' : 'Temno'}</span></button>
-        <div className="export-wrap"><button className="export-button" onClick={() => setExportOpen((open) => !open)} aria-expanded={exportOpen}><Icon name="calendar" size={16} /><span>Koledar .ics</span></button>{exportOpen && <div className="export-menu" role="dialog" aria-label="Izvoz koledarja"><a href={`/api/calendar?week=${encodeURIComponent(weekKey)}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`} download={`isrm-${programmeYear}-letnik-${weekKey}.ics`} onClick={() => setExportOpen(false)}>Prenesi ta teden</a><button onClick={copySubscription}>{studentNumber ? 'Kopiraj osebno povezavo' : 'Kopiraj naročniško povezavo'}</button><small>{copyStatus || (studentNumber ? 'Vključene so tvoje FRI vaje.' : 'Povezava se samodejno posodablja.')}</small></div>}</div>
-        <div className="settings-wrap">
-          <button className="icon-button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-label="Nastavitve programa"><Icon name="settings" /></button>
-          {settingsOpen && <div className="settings-menu" role="dialog" aria-label="Nastavitve programa">
-            <span>Program</span>
-            <div className="year-switch" role="group" aria-label="Letnik programa">{['1', '2', '3'].map((year) => <button key={year} className={programmeYear === year ? 'is-selected' : ''} onClick={() => setProgrammeYear(year)} aria-pressed={programmeYear === year}>{year}. letnik</button>)}</div>
-            <label className="student-number"><b>Vpisna številka</b><input value={studentNumberDraft} onChange={(event) => setStudentNumberDraft(event.target.value.replace(/\D/g, ''))} inputMode="numeric" autoComplete="off" placeholder="Za osebni urnik" /><small>Izbere tvojo FRI skupino pri prekrivanju vaj.</small></label>
-            <div className="settings-actions"><button onClick={saveStudentNumber}>Shrani</button>{studentNumber && <button onClick={() => { setStudentNumberDraft(''); setStudentNumber(''); window.localStorage.removeItem('timetable-student-number'); }}>Odstrani</button>}</div>
-            {!adminUnlocked ? <><label className="student-number"><b>Admin</b><input type="password" value={adminDraft} onChange={(event) => setAdminDraft(event.target.value)} autoComplete="current-password" placeholder="Geslo za urejanje" /></label><div className="settings-actions"><button onClick={unlockAdmin}>Odpri urejanje</button></div></>
-              : <><label className={`edit-switch ${editMode ? 'is-on' : ''}`}><span><b>Urejanje urnika</b><small>{editMode ? 'Vključeno: + spodaj, brisanje in odpadla predavanja.' : 'Izključeno: urnika ni mogoče po nesreči spremeniti.'}</small></span><input type="checkbox" role="switch" checked={editMode} onChange={(event) => setEditMode(event.target.checked)} /><i aria-hidden="true" /></label><small>Ob vsakem odprtju strani se urejanje izklopi. Shranjen je dostop, geslo ne.</small><div className="settings-actions"><button onClick={removeAdminAccess}>Odstrani dostop</button></div></>}
-            {(studentNumberError || adminError) && <p className="settings-error" role="alert">{studentNumberError || adminError}</p>}
-            <small>{studentNumber ? 'Osebni urnik je vključen.' : 'Shranjeno v tej napravi'}</small>
-          </div>}
-        </div>
-        <button className="icon-button" onClick={() => load(true)} disabled={loading} aria-label="Osveži urnik"><Icon name="refresh" /></button>
-      </div>
+    <header className="app-header">
+      <div><small className={canEdit ? 'is-editing' : ''}>IŠRM · {programmeYear}. letnik{studentNumber ? ' · osebni' : ''}{canEdit ? ' · urejanje' : ''}</small><h1>Urnik</h1></div>
+      <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Nastavitve"><Icon name="settings" /></button>
     </header>
 
     <div>
     <div className="week-control-row">
     <section className="week-control" aria-label="Izbira tedna">
       <button className="week-arrow" onClick={previousWeek} aria-label="Prejšnji teden"><Icon name="arrowLeft" /></button>
-      <button className="week-title" onClick={() => navigateWeek(currentWeek(), currentWeek() < weekStart ? 'back' : 'forward')}><span key={viewMode === 'month' ? monthKey : weekKey} className={rollDirection ? `roll roll--${rollDirection}` : ''}>{viewMode === 'month' ? new Intl.DateTimeFormat('sl-SI', { month: 'long', year: 'numeric' }).format(weekStart) : <>{formatDate(weekStart)} — {formatDate(plusDays(weekStart, 4))}</>}</span><small>Osveženo {formatFetched(data?.fetchedAt)}</small></button>
+      <button className="week-title" onClick={() => navigateWeek(currentWeek(), currentWeek() < weekStart ? 'back' : 'forward')}><span key={viewMode === 'month' ? monthKey : weekKey} className={rollDirection ? `roll roll--${rollDirection}` : ''}>{viewMode === 'month' ? new Intl.DateTimeFormat('sl-SI', { month: 'long', year: 'numeric' }).format(weekStart).replace(/^./, (letter) => letter.toUpperCase()) : <>{formatDate(weekStart)} — {formatDate(plusDays(weekStart, 4))}</>}</span><small>Osveženo {formatFetched(data?.fetchedAt)} · {(viewMode === 'month' ? monthEvents : events).length} {(viewMode === 'month' ? monthEvents : events).length === 1 ? 'obveznost' : 'obveznosti'}</small></button>
       <button className="week-arrow" onClick={nextWeek} aria-label="Naslednji teden"><Icon name="arrowRight" /></button>
     </section>
     <button className="today-button" onClick={() => navigateWeek(currentWeek(), currentWeek() < weekStart ? 'back' : 'forward')} disabled={weekKey === dateKey(currentWeek())} aria-label="Pojdi na trenutni teden">Danes</button>
@@ -817,7 +818,7 @@ function App() {
     {(error || sourceIssues.length > 0) && <div className="notice" role="status">{error || `Pozor: ${sourceIssues.map(([source, status]) => `${source} (${status.message || 'vir ni dosegljiv'})`).join('; ')}. Prikazani so zadnji uspešno shranjeni podatki.`}</div>}
 
     <section className="schedule" aria-label="Tedenski urnik">
-      <div className="schedule__heading"><h2>Urnik</h2><div><span>{events.length} {events.length === 1 ? 'obveznost' : 'obveznosti'}</span><PillGroup className="view-modes" selected={viewMode} role="group" aria-label="Prikaz urnika">{[['agenda', 'Seznam'], ['timeline', 'Časovni'], ['week', 'Teden'], ['month', 'Mesec']].map(([mode, label]) => <button key={mode} className={viewMode === mode ? 'is-selected' : ''} onClick={() => changeView(mode)} aria-pressed={viewMode === mode}>{label}</button>)}</PillGroup></div></div>
+      <div className="schedule__heading"><PillGroup className="view-modes" selected={viewMode} role="group" aria-label="Prikaz urnika">{[['agenda', 'Seznam'], ['timeline', 'Časovni'], ['week', 'Teden'], ['month', 'Mesec']].map(([mode, label]) => <button key={mode} className={viewMode === mode ? 'is-selected' : ''} onClick={() => changeView(mode)} aria-pressed={viewMode === mode}>{label}</button>)}</PillGroup></div>
       <div ref={pagerRef} className={`pager ${drag ? `is-${drag.phase}` : ''}`}>
         <div key={`${weekKey}-${navigationKey}`} className={`pager__page week-content week-content--${navigationDirection}`} style={drag?.level === 'week' ? { transform: `translateX(${drag.offset}px)`, opacity: drag.phase === 'commit' ? 0.4 : 1 - Math.min(1, Math.abs(drag.offset) / 900) } : undefined}>
           {renderPage({ week: weekStart, days: weekDays, items: events, monthItems: monthEvents, dayIndex: timelineDayIndex, isLoading: loading && !data, live: true })}
@@ -834,14 +835,36 @@ function App() {
     </section>
     </div>
 
-    {selectedEvent && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setSelectedEvent(null)}><section className={`lesson-dialog lesson-dialog--${selectedEvent.source.toLowerCase()}`} role="dialog" aria-modal="true" aria-label={`Podrobnosti: ${selectedEvent.title}`} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>{selectedEvent.source}</b><i>{selectedEvent.source === 'FRI' ? 'Računalništvo in informatika' : selectedEvent.source === 'FMF' ? 'Matematika in fizika' : 'Skupni dogodek'}</i></span><span className="lesson-type">{selectedEvent.type}</span><h2>{selectedEvent.title}</h2></div><button className="lesson-close" onClick={() => setSelectedEvent(null)} aria-label="Zapri podrobnosti"><Icon name="close" size={18} /></button></header><div className="lesson-details"><div><b>Termin</b><span>{new Intl.DateTimeFormat('sl-SI', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${selectedEvent.date}T12:00:00`))}</span><strong>{selectedEvent.start}–{selectedEvent.end}</strong></div><div><b>Prostor</b><strong>{selectedEvent.room || 'Ni podatka'}</strong></div><div><b>Izvajalec</b><strong>{selectedEvent.teacher || 'Ni podatka'}</strong></div></div>{selectedEvent.cancelled && <p className="lesson-cancelled">{['Ta termin odpade', selectedEvent.cancelNote].filter(Boolean).join(' · ')}</p>}{canEdit && <div className="lesson-admin"><b>Urejanje · admin</b>{!['FRI', 'FMF'].includes(selectedEvent.source) ? <button className="is-danger" onClick={() => deleteEvent(selectedEvent)}>Izbriši dogodek</button> : selectedEvent.cancelled ? <button onClick={() => setCancelled(selectedEvent, false)}>Prekliči odpad · predavanje bo</button> : <><input value={cancelNote} onChange={(event) => setCancelNote(event.target.value)} placeholder="Opomba (neobvezno)" maxLength={160} /><button className="is-danger" onClick={() => setCancelled(selectedEvent, true)}>Označi kot odpadlo</button></>}{adminError && <p className="settings-error" role="alert">{adminError}</p>}</div>}</section></div>}
+    {selectedEvent && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setSelectedEvent(null)}><section className={`lesson-dialog lesson-dialog--${selectedEvent.source.toLowerCase()}`} role="dialog" aria-modal="true" aria-label={`Podrobnosti: ${selectedEvent.title}`} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>{selectedEvent.source}</b><i>{selectedEvent.source === 'FRI' ? 'Računalništvo in informatika' : selectedEvent.source === 'FMF' ? 'Matematika in fizika' : 'Skupni dogodek'}</i></span><span className="lesson-type">{typeName(selectedEvent.type)}</span><h2>{selectedEvent.title}</h2></div><button className="lesson-close" onClick={() => setSelectedEvent(null)} aria-label="Zapri podrobnosti"><Icon name="close" size={18} /></button></header><div className="lesson-details"><div><b>Termin</b><span>{new Intl.DateTimeFormat('sl-SI', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${selectedEvent.date}T12:00:00`))}</span><strong>{selectedEvent.start}–{selectedEvent.end}</strong></div><div><b>Prostor</b><strong>{selectedEvent.room || 'Ni podatka'}</strong></div><div><b>Izvajalec</b><strong>{selectedEvent.teacher || 'Ni podatka'}</strong></div></div>{selectedEvent.cancelled && <p className="lesson-cancelled">{['Ta termin odpade', selectedEvent.cancelNote].filter(Boolean).join(' · ')}</p>}{canEdit && <div className="lesson-admin"><b>Urejanje · admin</b>{!['FRI', 'FMF'].includes(selectedEvent.source) ? <button className="is-danger" onClick={() => deleteEvent(selectedEvent)}>Izbriši dogodek</button> : selectedEvent.cancelled ? <button onClick={() => setCancelled(selectedEvent, false)}>Prekliči odpad · predavanje bo</button> : <><input value={cancelNote} onChange={(event) => setCancelNote(event.target.value)} placeholder="Opomba (neobvezno)" maxLength={160} /><button className="is-danger" onClick={() => setCancelled(selectedEvent, true)}>Označi kot odpadlo</button></>}{adminError && <p className="settings-error" role="alert">{adminError}</p>}</div>}</section></div>}
 
     {canEdit && <button className="event-fab" onClick={() => setAdminMenuOpen(true)} aria-label="Dodaj"><Icon name="plus" size={21} /><span>Dodaj</span></button>}
     {eventComposerOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setEventComposerOpen(false)}><section className="lesson-dialog event-composer" role="dialog" aria-modal="true" aria-labelledby="event-composer-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>{programmeYear}. letnik</i></span><h2 id="event-composer-title">Dodaj dogodek</h2></div><button className="lesson-close" onClick={() => setEventComposerOpen(false)} aria-label="Zapri dodajanje dogodka"><Icon name="close" size={18} /></button></header><p>Dogodek bo viden celotnemu {programmeYear}. letniku v prikazanem tednu.</p><form onSubmit={addCustomEvent}><label><b>Naslov</b><input value={customEvent.title} onChange={(event) => setCustomEvent((value) => ({ ...value, title: event.target.value }))} placeholder="Npr. Izpit" autoFocus required /></label><label><b>Datum</b><input type="date" value={customEvent.date} onChange={(event) => setCustomEvent((value) => ({ ...value, date: event.target.value }))} required /></label><div className="event-composer__times"><label><b>Začetek</b><input type="time" value={customEvent.start} onChange={(event) => setCustomEvent((value) => ({ ...value, start: event.target.value }))} required /></label><label><b>Konec</b><input type="time" value={customEvent.end} onChange={(event) => setCustomEvent((value) => ({ ...value, end: event.target.value }))} required /></label></div><label><b>Lokacija <small>neobvezno</small></b><input value={customEvent.room} onChange={(event) => setCustomEvent((value) => ({ ...value, room: event.target.value }))} placeholder="Npr. P.01" /></label>{adminError && <p className="settings-error" role="alert">{adminError}</p>}<div className="event-composer__actions"><button type="button" onClick={() => setEventComposerOpen(false)}>Prekliči</button><button type="submit">Dodaj dogodek</button></div></form></section></div>}
 
     {adminMenuOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setAdminMenuOpen(false)}><section className="lesson-dialog admin-menu" role="dialog" aria-modal="true" aria-label="Urejanje" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>{programmeYear}. letnik</i></span><h2>Kaj želiš dodati?</h2></div><button className="lesson-close" onClick={() => setAdminMenuOpen(false)} aria-label="Zapri"><Icon name="close" size={18} /></button></header><div className="admin-menu__actions"><button onClick={() => { setAdminMenuOpen(false); openEventComposer(); }}>Nov dogodek</button><button onClick={() => { setAdminMenuOpen(false); setAdminError(''); setMessageComposerOpen(true); }}>Sporočilo za letnik</button></div><p>Predavanje označiš kot odpadlo tako, da ga klikneš na urniku.</p></section></div>}
     {messageComposerOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setMessageComposerOpen(false)}><section className="lesson-dialog event-composer" role="dialog" aria-modal="true" aria-labelledby="message-composer-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span className="lesson-faculty"><b>IŠRM</b><i>{programmeYear}. letnik</i></span><h2 id="message-composer-title">Novo sporočilo</h2></div><button className="lesson-close" onClick={() => setMessageComposerOpen(false)} aria-label="Zapri"><Icon name="close" size={18} /></button></header><p>Prikaže se na vrhu urnika vsem v {programmeYear}. letniku.</p><form onSubmit={sendMessage}><label><b>Sporočilo</b><textarea value={messageDraft.text} onChange={(event) => setMessageDraft((value) => ({ ...value, text: event.target.value }))} rows={4} maxLength={500} placeholder="Npr. Jutri predavanje iz Analize odpade." autoFocus required /></label><div className="message-days" role="group" aria-label="Vidno">{[[1, '1 dan'], [3, '3 dni'], [7, '1 teden'], [14, '2 tedna']].map(([days, label]) => <button type="button" key={days} className={messageDraft.days === days ? 'is-selected' : ''} onClick={() => setMessageDraft((value) => ({ ...value, days }))}>{label}</button>)}</div>{adminError && <p className="settings-error" role="alert">{adminError}</p>}<div className="event-composer__actions"><button type="button" onClick={() => setMessageComposerOpen(false)}>Prekliči</button><button type="submit">Pošlji</button></div></form></section></div>}
-    <footer className="footer"><span>IŠRM · FRI × FMF</span><div className="footer-links">{isAndroidDevice() && androidRelease?.androidApkUrl ? <a className="footer-install" href={androidRelease.androidApkUrl}><Icon name="download" size={14} />Prenesi APK</a> : <button className="footer-install" onClick={installPrompt ? install : () => setInstallGuideOpen(true)}><Icon name="download" size={14} />Namesti PWA</button>}<a href="/privacy">Zasebnost</a></div><div className="source-statuses">{['FRI', 'FMF'].map((source) => <span key={source} className={data?.sources?.[source]?.ok ? 'ok' : 'warning'}><b />{source}</span>)}</div></footer>
+    {settingsOpen && <div className="lesson-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}><section className="lesson-dialog settings-sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+      <header><div><span className="sheet-kicker">Nastavitve</span><h2 id="settings-title">Program</h2></div><button className="lesson-close" onClick={() => setSettingsOpen(false)} aria-label="Zapri nastavitve"><Icon name="close" size={18} /></button></header>
+      <span className="sheet-section">Letnik</span>
+      <PillGroup className="segmented" selected={programmeYear} role="group" aria-label="Letnik programa">{['1', '2', '3'].map((year) => <button key={year} className={programmeYear === year ? 'is-selected' : ''} onClick={() => setProgrammeYear(year)} aria-pressed={programmeYear === year}>{year}. letnik</button>)}</PillGroup>
+      <span className="sheet-section">Vpisna številka · neobvezno</span>
+      <input className="sheet-input" value={studentNumberDraft} onChange={(event) => setStudentNumberDraft(event.target.value.replace(/\D/g, ''))} inputMode="numeric" autoComplete="off" placeholder="Za osebni urnik" />
+      <small className="sheet-hint">Izbere tvojo FRI skupino pri prekrivanju vaj.</small>
+      <div className="sheet-row"><button className="sheet-primary" onClick={saveStudentNumber}>Shrani</button><button className="sheet-secondary" onClick={() => { setStudentNumberDraft(''); setStudentNumber(''); setStudentNumberError('Osebni urnik je izključen.'); window.localStorage.removeItem('timetable-student-number'); }}>Odstrani</button></div>
+      {studentNumberError ? <p className="sheet-hint is-strong">{studentNumberError}</p> : <p className="sheet-hint is-strong">{studentNumber ? 'Osebni urnik je vključen.' : 'Shranjeno samo v tej napravi.'}</p>}
+      <span className="sheet-section">Videz</span>
+      <PillGroup className="segmented" selected={theme} role="group" aria-label="Videz">{[['system', 'Sistem'], ['light', 'Svetlo'], ['dark', 'Temno']].map(([value, label]) => <button key={value} className={theme === value ? 'is-selected' : ''} onClick={() => setTheme(value)} aria-pressed={theme === value}>{label}</button>)}</PillGroup>
+      <span className="sheet-section">Koledar .ics</span>
+      <small className="sheet-hint">{studentNumber ? 'Naročniška povezava vključuje tvoje FRI vaje in se sama posodablja.' : 'Naročniška povezava se sama posodablja.'}</small>
+      <div className="sheet-row"><button className="sheet-secondary" onClick={copySubscription}>Kopiraj povezavo</button><a className="sheet-secondary" href={`/api/calendar?week=${encodeURIComponent(weekKey)}&programme=${programmeYear}${studentNumber ? `&student=${encodeURIComponent(studentNumber)}` : ''}`} download={`isrm-${programmeYear}-letnik-${weekKey}.ics`}>Prenesi ta teden</a></div>
+      {copyStatus && <small className="sheet-hint is-strong">{copyStatus}</small>}
+      <span className="sheet-section">Urejanje · admin</span>
+      {!adminUnlocked ? <><input className="sheet-input" type="password" value={adminDraft} onChange={(event) => setAdminDraft(event.target.value)} autoComplete="current-password" placeholder="Geslo za urejanje" /><button className="sheet-secondary is-wide" onClick={unlockAdmin}>Odpri urejanje</button></>
+        : <><label className={`edit-switch ${editMode ? 'is-on' : ''}`}><span><b>Urejanje urnika</b><small>{editMode ? 'Vključeno: + spodaj desno, brisanje in odpadla predavanja.' : 'Izključeno: urnika ni mogoče po nesreči spremeniti.'}</small></span><input type="checkbox" role="switch" checked={editMode} onChange={(event) => setEditMode(event.target.checked)} /><i aria-hidden="true" /></label><small className="sheet-hint">Ob vsakem odprtju strani se urejanje izklopi. Dostop je shranjen na tej napravi, geslo pa ne.</small><button className="sheet-secondary is-wide is-danger" onClick={removeAdminAccess}>Odstrani dostop</button></>}
+      {adminError && <p className="settings-error" role="alert">{adminError}</p>}
+      <a className="sheet-link" href="/privacy">Politika zasebnosti</a>
+      <small className="sheet-hint is-strong">Različica {APP_VERSION} · brez računov, oglasov in sledenja</small>
+    </section></div>}
+    <footer className="footer"><span className="source-statuses">{['FRI', 'FMF'].map((source) => <span key={source} className={data?.sources?.[source]?.ok === false ? 'warning' : 'ok'}><b />{source}</span>)}</span><span>v{APP_VERSION}</span>{isAndroidDevice() && androidRelease?.androidApkUrl ? <a href={androidRelease.androidApkUrl}>Prenesi aplikacijo</a> : <button onClick={installPrompt ? install : () => setInstallGuideOpen(true)}>Namesti</button>}<a href="/privacy">Zasebnost</a></footer>
     {isAndroidDevice() && androidRelease?.androidApkUrl && !installDismissed && <aside className="install-banner android-install-banner" aria-label="Prenos Android aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM za Android</strong><p>Native aplikacija {androidRelease.androidVersion} z delovanjem brez povezave in pripomočki.</p></div><a className="install-banner__action" href={androidRelease.androidApkUrl}><Icon name="download" size={16} />Prenesi</a><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
     {isIosDevice() && !isStandaloneApp() && !installDismissed && <aside className="install-banner" aria-label="Namestitev IŠRM na iPhone"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>{isBraveBrowser() ? 'Brave na iPhonu ni zanesljiv za PWA. Odpri stran v Chromu ali Safariju.' : 'V Safariju ali Chromu izberi Deli in nato Add to Home Screen.'}</p></div><button className="install-banner__action" onClick={() => setInstallGuideOpen(true)}><Icon name="download" size={16} />Navodila</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}
     {!isIosDevice() && !androidRelease?.androidApkUrl && installPrompt && !installDismissed && <aside className="install-banner" aria-label="Namestitev aplikacije"><span className="install-banner__mark"><Icon name="grid" size={17} /></span><div><strong>Namesti IŠRM</strong><p>Dodaj urnik na začetni zaslon za hitrejši dostop.</p></div><button className="install-banner__action" onClick={install}><Icon name="download" size={16} />Namesti</button><button className="install-banner__close" onClick={() => setInstallDismissed(true)} aria-label="Zapri obvestilo"><Icon name="close" size={16} /></button></aside>}

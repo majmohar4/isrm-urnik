@@ -253,3 +253,161 @@ h1 { max-width: 760px; margin-bottom: 15px; font-size: clamp(36px, 6vw, 74px); f
 :root[data-theme="dark"] .edit-switch input:checked + i::after { background: #121413; }
 .android-release-direct { margin: 14px 0 0; color: #69756e; font-size: 13px; }
 .android-release-direct a { color: inherit; font-weight: 700; }
+
+
+/* ===================================================================================================
+   App skin: the website and PWA use the Android app's design (palette, header, week bar, chips,
+   lesson cards, bottom sheets). Every rule is prefixed with `html[data-theme] .skin` so it outranks the
+   older desktop styles above, including their dark-theme variants.
+   =================================================================================================== */
+:root { --canvas: #f7f7f2; --ink: #202520; --muted: #69736a; --divider: #dce0d8; --surface: #fcfcf8; --edge: #e1e4dd; --accent: #314b42; --on-accent: #f8faf5; --today-fill: #e7eee8; --today-text: #3d5d4a; --empty: #f0f1ec; --fri-fill: #fcebe3; --fri-edge: #f0d2c2; --fri-text: #a64e2d; --fri-tag: #f7d9c9; --fmf-fill: #e3f2ee; --fmf-edge: #c7e1d9; --fmf-text: #257667; --fmf-tag: #cce9e0; --warning: #c0632e; --now: #d24a3c; --notice-fill: #fbf1dc; --notice-text: #7a5414; }
+:root[data-theme="dark"] { --canvas: #151916; --ink: #edf1ea; --muted: #aeb8af; --divider: #303630; --surface: #1d231e; --edge: #303930; --accent: #c8ded1; --on-accent: #172019; --today-fill: #26382d; --today-text: #b9ddc1; --empty: #1d231e; --fri-fill: #392621; --fri-edge: #694739; --fri-text: #ffb99e; --fri-tag: #4a3028; --fmf-fill: #18342e; --fmf-edge: #326558; --fmf-text: #a4e4d4; --fmf-tag: #20463c; --warning: #f0a070; --now: #ff7a6e; --notice-fill: #3a3020; --notice-text: #f2d49b; }
+html[data-theme], html[data-theme] body { background: var(--canvas); color-scheme: light dark; }
+
+html[data-theme] .skin { width: min(100%, 760px); padding: 14px 20px 40px; color: var(--ink); font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+html[data-theme] .skin button, html[data-theme] .skin input, html[data-theme] .skin textarea, html[data-theme] .skin a { font-family: inherit; }
+html[data-theme] .skin .app-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+html[data-theme] .skin .app-header small { display: block; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+html[data-theme] .skin .app-header small.is-editing { color: var(--warning); }
+html[data-theme] .skin .app-header h1 { margin: 2px 0 0; font-size: 31px; font-weight: 700; letter-spacing: -.03em; line-height: 1.1; }
+html[data-theme] .skin .icon-button { display: grid; place-items: center; width: 42px; height: 42px; padding: 0; border: 1px solid var(--edge); border-radius: 14px; color: var(--ink); background: var(--surface); }
+
+html[data-theme] .skin .week-control-row { display: flex; gap: 8px; align-items: stretch; margin-top: 14px; }
+html[data-theme] .skin .week-control { display: flex; flex: 1; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--edge); border-radius: 18px; background: var(--surface); box-shadow: none; }
+html[data-theme] .skin .week-arrow { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 1px solid var(--edge); border-radius: 14px; color: var(--ink); background: var(--surface); }
+html[data-theme] .skin .week-title { flex: 1; color: var(--ink); }
+html[data-theme] .skin .week-title span { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+html[data-theme] .skin .week-title small { margin-top: 2px; color: var(--muted); font: 9.5px ui-monospace, 'SF Mono', Menlo, monospace; }
+html[data-theme] .skin .today-button { min-width: 0; padding: 0 15px; border: 0; border-radius: 14px; color: var(--on-accent); background: var(--accent); font-size: 13px; font-weight: 700; }
+html[data-theme] .skin .today-button:disabled { opacity: .45; }
+
+html[data-theme] .skin .announcement { margin-top: 12px; background: var(--today-fill); color: var(--ink); }
+html[data-theme] .skin .announcement small { color: var(--today-text); font-family: inherit; font-weight: 700; }
+html[data-theme] .skin .announcement__close { color: var(--muted); }
+html[data-theme] .skin .announcement__delete { color: var(--warning); }
+html[data-theme] .skin .notice { margin: 12px 0 0; padding: 13px; border: 0; border-radius: 14px; color: var(--notice-text); background: var(--notice-fill); font-size: 13px; line-height: 1.4; }
+
+html[data-theme] .skin .schedule { margin-top: 14px; }
+html[data-theme] .skin .schedule__heading { display: block; margin: 0 0 12px; }
+html[data-theme] .skin .view-modes { display: flex; gap: 7px; width: auto; padding: 0; border: 0; background: none; overflow-x: auto; scrollbar-width: none; }
+html[data-theme] .skin .view-modes button { min-height: 38px; padding: 0 17px; border: 1px solid var(--edge); border-radius: 13px; color: var(--muted); background: var(--surface); font-size: 13px; font-weight: 700; letter-spacing: 0; }
+html[data-theme] .skin .view-modes.has-pill button.is-selected { border-color: transparent; color: var(--on-accent); background: transparent; }
+html[data-theme] .skin .has-pill > .pill { border-radius: 13px; background: var(--accent); }
+
+html[data-theme] .skin .weekday-tabs, html[data-theme] .skin .timeline-day-switch { display: grid; gap: 5px; margin: 0 0 6px; padding: 0; border: 0; border-radius: 0; background: none; }
+html[data-theme] .skin .weekday-tabs a, html[data-theme] .skin .timeline-day-switch button { display: grid; place-items: center; align-content: center; gap: 1px; min-height: 50px; padding: 4px 2px; border: 1px solid var(--edge); border-radius: 12px; color: var(--muted); background: var(--surface); font-size: 12px; font-weight: 700; text-decoration: none; }
+html[data-theme] .skin .weekday-tabs a span, html[data-theme] .skin .timeline-day-switch button span { font-size: 12px; }
+html[data-theme] .skin .weekday-tabs a.is-today { border-color: var(--today-fill); color: var(--today-text); background: var(--today-fill); }
+html[data-theme] .skin .timeline-day-switch.has-pill button { background: transparent; }
+html[data-theme] .skin .timeline-day-switch.has-pill button.is-selected { border-color: transparent; color: var(--on-accent); }
+html[data-theme] .skin .timeline-day-switch.has-pill > .pill { border-radius: 12px; }
+
+/* Seznam: one column of day sections, like the app, at every width. */
+html[data-theme] .skin .agenda { display: block; }
+html[data-theme] .skin .agenda-day { margin: 0; padding: 0; border: 0; background: none; }
+html[data-theme] .skin .agenda-day header { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 22px 0 10px; border: 0; }
+html[data-theme] .skin .agenda-day header b { color: var(--ink); font-size: 18px; }
+html[data-theme] .skin .agenda-day header time { flex: 1; color: var(--muted); font: 13px inherit; font-family: inherit; }
+html[data-theme] .skin .no-events { margin: 0 0 4px; padding: 16px; border: 1px solid var(--divider); border-radius: 14px; color: var(--muted); background: var(--empty); font-size: 14px; }
+html[data-theme] .skin .tag { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 8px; color: var(--muted); background: var(--surface); font-size: 10px; font-style: normal; font-weight: 700; letter-spacing: .08em; }
+html[data-theme] .skin .tag--today { align-self: center; color: var(--today-text); background: var(--today-fill); }
+html[data-theme] .skin .tag--now { color: var(--on-accent); background: var(--now); }
+html[data-theme] .skin .tag--cancel { color: var(--on-accent); background: var(--warning); }
+
+html[data-theme] .skin .event { --fill: var(--today-fill); --edge-c: var(--edge); --src: var(--today-text); --src-tag: var(--surface); position: relative; margin: 0 0 8px; padding: 0; border: 1px solid var(--edge-c); border-radius: 18px; color: var(--ink); background: var(--fill); box-shadow: none; overflow: hidden; }
+html[data-theme] .skin .event--fri { --fill: var(--fri-fill); --edge-c: var(--fri-edge); --src: var(--fri-text); --src-tag: var(--fri-tag); }
+html[data-theme] .skin .event--fmf { --fill: var(--fmf-fill); --edge-c: var(--fmf-edge); --src: var(--fmf-text); --src-tag: var(--fmf-tag); }
+html[data-theme] .skin .event.event--active { border: 2px solid var(--src); }
+html[data-theme] .skin .event.is-past { opacity: .62; }
+html[data-theme] .skin .event.is-cancelled { opacity: .55; }
+html[data-theme] .skin .event__summary { display: flex; gap: 0; align-items: flex-start; width: 100%; padding: 14px 14px 14px 15px; border: 0; color: inherit; background: none; text-align: left; cursor: pointer; }
+html[data-theme] .skin .event__time { display: grid; flex: none; gap: 3px; width: 64px; }
+html[data-theme] .skin .event__time b { color: var(--src); font: 700 15px ui-monospace, 'SF Mono', Menlo, monospace; }
+html[data-theme] .skin .event__time span { color: var(--muted); font: 12px ui-monospace, 'SF Mono', Menlo, monospace; }
+html[data-theme] .skin .event__body { display: grid; flex: 1; gap: 6px; min-width: 0; }
+html[data-theme] .skin .event__title { color: var(--ink); font-size: 17px; font-weight: 700; line-height: 1.25; }
+html[data-theme] .skin .event.is-cancelled .event__title { text-decoration: line-through; }
+html[data-theme] .skin .event__room { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; }
+html[data-theme] .skin .cancel-note { color: var(--warning) !important; font-size: 13px; font-weight: 700; }
+html[data-theme] .skin .event__tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+html[data-theme] .skin .event__tags .tag--source { color: var(--src); background: var(--src-tag); }
+html[data-theme] .skin .event__progress { display: block; height: 4px; margin: 0 14px 14px; border-radius: 2px; background: linear-gradient(90deg, var(--src) calc(var(--progress) * 100%), var(--edge-c) 0); }
+
+/* Časovni / Teden / Mesec */
+html[data-theme] .skin .timeline-scroll { border: 1px solid var(--edge); border-radius: 16px; background: var(--surface); }
+html[data-theme] .skin .timeline__hours span, html[data-theme] .skin .timeline-day header { color: var(--muted); }
+html[data-theme] .skin .timeline-day header b { color: var(--ink); }
+html[data-theme] .skin .timeline-event { border: 1px solid var(--edge); border-radius: 9px; color: var(--ink); background: var(--today-fill); box-shadow: none; }
+html[data-theme] .skin .timeline-event--fri { border-color: var(--fri-edge); background: var(--fri-fill); }
+html[data-theme] .skin .timeline-event--fmf { border-color: var(--fmf-edge); background: var(--fmf-fill); }
+html[data-theme] .skin .timeline-event time, html[data-theme] .skin .timeline-event span, html[data-theme] .skin .timeline-event em { color: var(--muted); }
+html[data-theme] .skin .timeline-event strong { color: var(--ink); }
+html[data-theme] .skin .month-view > header b { color: var(--muted); }
+html[data-theme] .skin .month-grid section { border: 1px solid var(--edge); border-radius: 10px; background: var(--surface); }
+html[data-theme] .skin .month-grid section.is-outside { opacity: .45; background: var(--empty); }
+html[data-theme] .skin .month-day-jump time { color: var(--ink); }
+html[data-theme] .skin .month-event { border: 0; border-radius: 5px; color: var(--today-text); background: var(--today-fill); }
+html[data-theme] .skin .month-event--fri { color: var(--fri-text); background: var(--fri-fill); }
+html[data-theme] .skin .month-event--fmf { color: var(--fmf-text); background: var(--fmf-fill); }
+html[data-theme] .skin .schedule-skeleton span { border-radius: 18px; background: var(--empty); }
+
+/* Sheets: every dialog slides up from the bottom on phones like the app's bottom sheets (centred on wide screens). */
+html[data-theme] .skin .lesson-backdrop { place-items: end center; padding: 0; background: rgb(10 14 12 / .45); }
+html[data-theme] .skin .lesson-dialog { width: min(560px, 100%); max-height: 92dvh; overflow-y: auto; padding: 14px 24px calc(28px + env(safe-area-inset-bottom)); border: 0; border-radius: 26px 26px 0 0; color: var(--ink); background: var(--canvas); box-shadow: 0 -18px 50px -30px rgb(0 0 0 / .6); animation: sheet-up .32s cubic-bezier(.2, .9, .25, 1); }
+html[data-theme] .skin .lesson-dialog::before { content: ''; display: block; width: 36px; height: 4px; margin: 0 auto 20px; border-radius: 3px; background: var(--edge); }
+@media (min-width: 721px) { html[data-theme] .skin .lesson-backdrop { place-items: center; padding: 24px; } html[data-theme] .skin .lesson-dialog { border-radius: 26px; } }
+@keyframes sheet-up { from { transform: translateY(40px); opacity: 0; } }
+html[data-theme] .skin .lesson-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 0; border: 0; }
+html[data-theme] .skin .lesson-dialog h2 { margin: 6px 0 0; color: var(--ink); font-size: 25px; font-weight: 700; letter-spacing: -.02em; line-height: 1.15; }
+html[data-theme] .skin .lesson-close { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--edge); border-radius: 12px; color: var(--muted); background: var(--surface); }
+html[data-theme] .skin .lesson-faculty { display: inline-flex; gap: 8px; align-items: center; }
+html[data-theme] .skin .lesson-faculty b { padding: 5px 9px; border-radius: 8px; color: var(--today-text); background: var(--today-fill); font-size: 10px; letter-spacing: .08em; }
+html[data-theme] .skin .lesson-dialog--fri .lesson-faculty b { color: var(--fri-text); background: var(--fri-tag); }
+html[data-theme] .skin .lesson-dialog--fmf .lesson-faculty b { color: var(--fmf-text); background: var(--fmf-tag); }
+html[data-theme] .skin .lesson-faculty i { border: 0; color: var(--muted); background: none; font-size: 13px; font-style: normal; }
+html[data-theme] .skin .lesson-type { display: block; margin-top: 8px; color: var(--muted); font-size: 14px; font-weight: 700; }
+html[data-theme] .skin .lesson-details { display: grid; gap: 8px; margin-top: 18px; padding: 0; border: 0; }
+html[data-theme] .skin .lesson-details > div { display: grid; gap: 4px; padding: 13px 15px; border: 1px solid var(--edge); border-radius: 14px; background: var(--surface); }
+html[data-theme] .skin .lesson-details b { color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+html[data-theme] .skin .lesson-details strong, html[data-theme] .skin .lesson-details span { color: var(--ink); font-size: 16px; font-weight: 700; }
+html[data-theme] .skin .lesson-details span { font-weight: 400; }
+html[data-theme] .skin .lesson-admin { border-color: var(--edge); }
+
+html[data-theme] .skin .sheet-kicker, html[data-theme] .skin .sheet-section { display: block; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+html[data-theme] .skin .sheet-section { margin: 22px 0 8px; }
+html[data-theme] .skin .segmented { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; }
+html[data-theme] .skin .segmented button { min-height: 44px; border: 1px solid var(--edge); border-radius: 13px; color: var(--muted); background: var(--surface); font-size: 13px; font-weight: 700; cursor: pointer; }
+html[data-theme] .skin .segmented.has-pill button.is-selected { border-color: transparent; color: var(--on-accent); background: transparent; }
+html[data-theme] .skin .sheet-input, html[data-theme] .skin .lesson-admin input, html[data-theme] .skin .event-composer input, html[data-theme] .skin .event-composer textarea { width: 100%; min-height: 50px; padding: 0 14px; border: 1px solid var(--edge); border-radius: 14px; color: var(--ink); background: var(--surface); font-size: 15px; }
+html[data-theme] .skin .event-composer textarea { padding: 12px 14px; }
+html[data-theme] .skin .sheet-hint { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+html[data-theme] .skin .sheet-hint.is-strong { font-weight: 700; }
+html[data-theme] .skin .sheet-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+html[data-theme] .skin .sheet-primary, html[data-theme] .skin .sheet-secondary { display: grid; place-items: center; min-height: 46px; padding: 0 12px; border-radius: 14px; font-size: 14px; font-weight: 700; text-align: center; text-decoration: none; cursor: pointer; }
+html[data-theme] .skin .sheet-primary { border: 0; color: var(--on-accent); background: var(--accent); }
+html[data-theme] .skin .sheet-secondary { border: 1px solid var(--edge); color: var(--ink); background: var(--surface); }
+html[data-theme] .skin .sheet-secondary.is-wide { width: 100%; margin-top: 10px; }
+html[data-theme] .skin .sheet-secondary.is-danger, html[data-theme] .skin .lesson-admin button.is-danger { color: var(--warning); border-color: var(--edge); }
+html[data-theme] .skin .sheet-link { display: block; margin-top: 24px; color: var(--accent); font-weight: 700; text-decoration: none; }
+html[data-theme] .skin .edit-switch { border-color: var(--edge); background: var(--surface); }
+html[data-theme] .skin .edit-switch.is-on { background: var(--today-fill); }
+html[data-theme] .skin .edit-switch input:checked + i { background: var(--accent); }
+html[data-theme] .skin .edit-switch input:checked + i::after { background: var(--on-accent); }
+html[data-theme] .skin .settings-error { color: var(--warning); }
+html[data-theme] .skin .lesson-admin button, html[data-theme] .skin .admin-menu__actions button, html[data-theme] .skin .message-days button, html[data-theme] .skin .event-composer__actions button { min-height: 46px; border: 1px solid var(--edge); border-radius: 14px; color: var(--ink); background: var(--surface); font-weight: 700; }
+html[data-theme] .skin .admin-menu__actions button:first-child, html[data-theme] .skin .message-days button.is-selected, html[data-theme] .skin .event-composer__actions button[type="submit"] { border-color: transparent; color: var(--on-accent); background: var(--accent); }
+html[data-theme] .skin .event-composer label b { color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; font-family: inherit; }
+
+html[data-theme] .skin .event-fab { display: grid; place-items: center; right: 20px; bottom: calc(20px + env(safe-area-inset-bottom)); width: 58px; height: 58px; padding: 0; border: 0; border-radius: 50%; color: var(--on-accent); background: var(--accent); box-shadow: 0 10px 26px -12px rgb(0 0 0 / .6); }
+html[data-theme] .skin .event-fab span { display: none; }
+
+html[data-theme] .skin .footer { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 14px; margin-top: 22px; padding: 0; border: 0; color: var(--muted); font: 10px ui-monospace, 'SF Mono', Menlo, monospace; }
+html[data-theme] .skin .footer a, html[data-theme] .skin .footer button { padding: 0; border: 0; color: var(--muted); background: none; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+html[data-theme] .skin .footer .source-statuses { display: inline-flex; gap: 10px; }
+html[data-theme] .skin .footer .source-statuses span { display: inline-flex; align-items: center; gap: 4px; }
+html[data-theme] .skin .footer .source-statuses b { width: 7px; height: 7px; border-radius: 50%; background: var(--fmf-text); }
+html[data-theme] .skin .footer .source-statuses .warning b { background: var(--warning); }
+html[data-theme] .skin .install-banner { border: 1px solid var(--edge); color: var(--ink); background: var(--surface); }
+html[data-theme] .skin .schedule__heading > div { flex-direction: row; align-items: center; width: auto; }
+html[data-theme] .skin .view-modes button { flex: none; width: auto; }
+html[data-theme] .skin .lesson-faculty { padding: 0; border: 0; border-radius: 0; background: none; }
