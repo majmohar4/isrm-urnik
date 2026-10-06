@@ -67,7 +67,7 @@ if [ "$MODE" = release ]; then
 fi
 
 say "Deploying to $SERVER"
-rsync -a server.mjs compose.yaml Dockerfile .dockerignore package.json package-lock.json programme-sources.json index.html vite.config.js "$SERVER:$REMOTE_DIR/"
+rsync -a server.mjs analytics.mjs compose.yaml Dockerfile .dockerignore package.json package-lock.json programme-sources.json index.html vite.config.js "$SERVER:$REMOTE_DIR/"
 rsync -a src/ "$SERVER:$REMOTE_DIR/src/"
 rsync -a public/ "$SERVER:$REMOTE_DIR/public/"
 # --force-recreate: a plain `up -d --build` on this Docker setup builds the image but keeps the old container running.

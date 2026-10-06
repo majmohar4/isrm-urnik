@@ -2,6 +2,7 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeF
 import { createServer } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { extname, join, normalize } from 'node:path';
+import { createAnalytics } from './analytics.mjs';
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || './data';
@@ -59,6 +60,8 @@ const ANDROID_RELEASE_URL = process.env.ANDROID_RELEASE_URL || '/android';
 // Short "what's new" for the in-app update sheet; separate items with "|".
 const ANDROID_RELEASE_NOTES = (process.env.ANDROID_RELEASE_NOTES || '').split('|').map((note) => note.trim()).filter(Boolean).slice(0, 6);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+// Separate, view-only password for the /admin statistics panel; it cannot edit events, cancellations or messages.
+const STATS_PASSWORD = process.env.STATS_PASSWORD || '';
 const DIST = join(process.cwd(), 'dist');
 // Self-hosted Android builds, mounted read-only from ./releases (see compose.yaml).
 const RELEASES_DIR = process.env.RELEASES_DIR || '/releases';
@@ -79,6 +82,7 @@ const PRELOAD_REFRESH_MS = Math.max(60, Number(process.env.PRELOAD_REFRESH_MINUT
 // Viewing a week re-checks it upstream at most this often; with ~40 users, per-view rechecks would mostly repeat work.
 const USER_RECHECK_MS = REFRESH_MS;
 const clientStates = new Map();
+const STARTED_AT = new Date().toISOString();
 
 mkdirSync(DATA_DIR, { recursive: true });
 
@@ -92,6 +96,7 @@ let announcements = loadJsonList(ANNOUNCEMENTS_FILE);
 // Only a SHA-256 of each key is kept, together with a fingerprint of the password it was issued under: changing
 // ADMIN_PASSWORD therefore revokes every key at once.
 let adminTokens = loadJsonList(ADMIN_TOKENS_FILE);
+const analytics = createAnalytics({ file: join(DATA_DIR, 'analytics.json'), programmes: Object.keys(PROGRAMMES) });
 // Bumped on every admin change (events, cancellations, messages). Open apps poll /api/revision — a few bytes — and
 // reload only when it moved, so everyone sees edits within seconds without re-fetching timetables all the time.
 // Starting from the clock means a restart also counts as a change, which is harmless.
@@ -242,16 +247,30 @@ function withCustomEvents(programme, weekKey, events) {
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const passwordFingerprint = () => sha256(`isrm-admin:${ADMIN_PASSWORD}`).slice(0, 16);
 
-function passwordMatches(supplied) {
-  if (!ADMIN_PASSWORD || supplied.length !== ADMIN_PASSWORD.length) return false;
-  return timingSafeEqual(Buffer.from(supplied), Buffer.from(ADMIN_PASSWORD));
+const statsFingerprint = () => sha256(`isrm-stats:${STATS_PASSWORD}`).slice(0, 16);
+
+function secretMatches(supplied, secret) {
+  if (!secret || supplied.length !== secret.length) return false;
+  return timingSafeEqual(Buffer.from(supplied), Buffer.from(secret));
 }
+const passwordMatches = (supplied) => secretMatches(supplied, ADMIN_PASSWORD);
+
+// Keys still valid under the current passwords; anything issued under an old password is dropped.
+const liveTokens = () => adminTokens.filter((entry) => (ADMIN_PASSWORD && entry.password === passwordFingerprint()) || (STATS_PASSWORD && entry.password === statsFingerprint()));
 
 function tokenRecord(request) {
   const token = String(request.headers['x-isrm-admin-token'] || '');
   if (!ADMIN_PASSWORD || !/^[a-f0-9]{64}$/.test(token)) return null;
   const hash = sha256(token);
   return adminTokens.find((entry) => entry.hash === hash && entry.password === passwordFingerprint()) || null;
+}
+
+// Statistics-only keys are signed with the stats fingerprint, so they never pass tokenRecord/adminAuthorized above.
+function statsTokenRecord(request) {
+  const token = String(request.headers['x-isrm-admin-token'] || '');
+  if (!STATS_PASSWORD || !/^[a-f0-9]{64}$/.test(token)) return null;
+  const hash = sha256(token);
+  return adminTokens.find((entry) => entry.hash === hash && entry.password === statsFingerprint()) || null;
 }
 
 // A saved admin key, or the password itself (older app versions still send it).
@@ -795,12 +814,31 @@ const server = createServer(async (request, response) => {
       const input = await readJson(request).catch(() => ({}));
       if (!passwordMatches(String(input.password || ''))) return sendJson(response, { error: 'Napačno administratorsko geslo.' }, 401);
       const token = randomBytes(32).toString('hex');
-      adminTokens = [...adminTokens.filter((entry) => entry.password === passwordFingerprint()).slice(-49), { hash: sha256(token), password: passwordFingerprint(), label: String(input.device || '').slice(0, 60), createdAt: new Date().toISOString() }];
+      adminTokens = [...liveTokens().slice(-49), { hash: sha256(token), password: passwordFingerprint(), label: String(input.device || '').slice(0, 60), createdAt: new Date().toISOString() }];
       persistAdminTokens();
       return sendJson(response, { token });
     }
+    // The statistics panel signs in with STATS_PASSWORD (view only) or the full admin password.
+    if (url.pathname === '/api/admin/stats/login') {
+      const input = await readJson(request).catch(() => ({}));
+      const password = String(input.password || '');
+      const scope = secretMatches(password, STATS_PASSWORD) ? 'stats' : passwordMatches(password) ? 'admin' : '';
+      if (!scope) return sendJson(response, { error: 'Napačno geslo.' }, 401);
+      const token = randomBytes(32).toString('hex');
+      adminTokens = [...liveTokens().slice(-49), { hash: sha256(token), password: scope === 'stats' ? statsFingerprint() : passwordFingerprint(), scope, label: 'nadzorna plošča', createdAt: new Date().toISOString() }];
+      persistAdminTokens();
+      return sendJson(response, { token, scope });
+    }
+    if (url.pathname === '/api/admin/stats') {
+      if (!tokenRecord(request) && !statsTokenRecord(request)) return sendJson(response, { error: 'Napačno geslo.' }, 401);
+      const sources = Object.fromEntries(Object.entries(cache.programmes || {}).map(([programme, stored]) => [programme, stored.sources]));
+      return sendJson(response, {
+        ...analytics.stats(),
+        server: { version: APP_VERSION, androidVersion: ANDROID_APP_VERSION, startedAt: STARTED_AT, fetchedAt: cache.fetchedAt, sources, preload: preloadState, customEvents: customEvents.length, announcements: announcements.filter((entry) => new Date(entry.expiresAt).getTime() > Date.now()).length, adminDevices: adminTokens.filter((entry) => entry.password === passwordFingerprint()).length },
+      });
+    }
     if (url.pathname === '/api/admin/logout') {
-      const record = tokenRecord(request);
+      const record = tokenRecord(request) || statsTokenRecord(request);
       if (record) { adminTokens = adminTokens.filter((entry) => entry !== record); persistAdminTokens(); }
       return sendJson(response, { ok: true });
     }
@@ -860,6 +898,14 @@ const server = createServer(async (request, response) => {
       }
       return sendJson(response, { error: 'Pot ni najdena.' }, 404);
     } catch (error) { return sendJson(response, { error: error.message || 'Neveljavna zahteva.' }, 400); }
+  }
+  // Anonymous session ping from the web app, PWA and Android app (see analytics.mjs and /privacy).
+  if (url.pathname === '/api/ping') {
+    if (request.method !== 'POST') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
+    const input = await readJson(request).catch(() => null);
+    analytics.record(input, request.headers['user-agent']);
+    response.writeHead(204, { 'cache-control': 'no-store' });
+    return response.end();
   }
   if (request.method !== 'GET') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
   if (url.pathname === '/api/revision') return sendJson(response, { revision: contentRevision });
@@ -1009,6 +1055,7 @@ async function shutDown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log(`Received ${signal}; shutting down.`);
+  analytics.flush();
   await sendNtfyNotification({
     title: 'ISRM urnik se ustavlja',
     tags: 'warning',

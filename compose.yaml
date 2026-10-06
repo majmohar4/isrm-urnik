@@ -32,6 +32,7 @@ services:
       ANDROID_RELEASE_URL: ${ANDROID_RELEASE_URL:-/android}
       ANDROID_RELEASE_NOTES: ${ANDROID_RELEASE_NOTES:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      STATS_PASSWORD: ${STATS_PASSWORD:-}
       TRUST_PROXY: "true"
     volumes:
       - timetable-cache:/data

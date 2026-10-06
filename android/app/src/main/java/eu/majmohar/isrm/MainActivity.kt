@@ -199,6 +199,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         livePoll.removeCallbacks(liveTick); livePoll.post(liveTick)
+        pingSession()
         if (content.childCount > 0) render(animate = false)
         // Back from the "install unknown apps" setting: continue the update if it was allowed.
         pendingUpdate?.let { resume -> if (android.os.Build.VERSION.SDK_INT < 26 || packageManager.canRequestPackageInstalls()) { pendingUpdate = null; resume() } }
@@ -1112,6 +1113,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Anonymous usage count (see /privacy): a random install id, counted on open and again after 30 minutes away.
+    // Devices with admin access are left out so the numbers show real users.
+    private fun pingSession() {
+        if (adminToken().isNotBlank() || System.currentTimeMillis() - prefs.getLong("last-ping", 0L) < SESSION_GAP_MS) return
+        val id = prefs.getString("install-id", null)?.takeIf { Regex("^[a-f0-9]{32}$").matches(it) }
+            ?: java.util.UUID.randomUUID().toString().replace("-", "").also { prefs.edit().putString("install-id", it).apply() }
+        prefs.edit().putLong("last-ping", System.currentTimeMillis()).apply()
+        val widgets = runCatching { android.appwidget.AppWidgetManager.getInstance(this).getAppWidgetIds(android.content.ComponentName(this, TimetableWidgetProvider::class.java)).size }.getOrDefault(0)
+        val body = org.json.JSONObject().put("id", id).put("platform", "android-app").put("os", "android").put("programme", year)
+            .put("personal", student.isNotBlank()).put("version", BuildConfig.VERSION_NAME).put("widgets", widgets)
+        background.execute { repo.ping(body) }
+    }
+
     private fun adminToken() = prefs.getString("admin-token", "") ?: ""
 
     private fun unlockAdmin(password: String, message: TextView, dialog: BottomSheetDialog) {
@@ -1574,6 +1588,7 @@ class MainActivity : AppCompatActivity() {
         // Process-wide so a theme switch (which recreates the activity) does not ask about the same update twice.
         var releaseChecked = false
         const val LIVE_POLL_MS = 20_000L
+        const val SESSION_GAP_MS = 30 * 60_000L
         // Material 3 "emphasized" curves: quick start, long gentle settle.
         val EMPHASIZED = PathInterpolator(0.2f, 0f, 0f, 1f)
         val EMPHASIZED_ACCELERATE = PathInterpolator(0.3f, 0f, 0.8f, 0.15f)

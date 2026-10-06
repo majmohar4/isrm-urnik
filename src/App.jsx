@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { APP_VERSION } from './version.js';
+import { pingSession } from './analytics.js';
+import AdminPanel from './Admin.jsx';
 
 const DAY_NAMES = ['Pon', 'Tor', 'Sre', 'Čet', 'Pet'];
 const FULL_DAY_NAMES = ['ponedeljek', 'torek', 'sreda', 'četrtek', 'petek'];
@@ -267,13 +269,14 @@ function PrivacyPolicy() {
     <a className="privacy-back" href="/">Nazaj na urnik</a>
     <p className="privacy-kicker">IŠRM · FRI program</p>
     <h1>Politika zasebnosti</h1>
-    <p className="privacy-lead">IŠRM je namenjen prikazu urnika. Ne uporablja računov, oglasov, analitike ali sledilnikov.</p>
-    <section><h2>Podatki v tej napravi</h2><p>Izbrani letnik, videz, zadnji pogled in po želji vpisna številka se shranijo samo v lokalno shrambo tvoje naprave. Vpisno številko lahko kadarkoli odstraniš v nastavitvah. Če odkleneš urejanje dogodkov, se administratorsko geslo prav tako hrani lokalno v tem brskalniku, dokler ne počistiš podatkov brskalnika.</p></section>
+    <p className="privacy-lead">IŠRM je namenjen prikazu urnika. Ne uporablja računov, oglasov ali zunanjih sledilnikov. Za štetje uporabe vodi le lastno, anonimno statistiko, opisano spodaj.</p>
+    <section><h2>Podatki v tej napravi</h2><p>Izbrani letnik, videz, zadnji pogled in po želji vpisna številka se shranijo samo v lokalno shrambo tvoje naprave. Vpisno številko lahko kadarkoli odstraniš v nastavitvah. Če odkleneš urejanje dogodkov, se v napravi hrani le preklicljiv administratorski ključ, ne geslo.</p></section>
+    <section><h2>Anonimna statistika uporabe</h2><p>Da vemo, koliko ljudi urnik dejansko uporablja, aplikacija ob odprtju (in ponovno po vsaj 30 minutah odsotnosti) pošlje strežniku IŠRM kratko sporočilo: naključen anonimni ključ, ki ga ustvari sama ob prvem zagonu, način uporabe (brskalnik, nameščena spletna aplikacija ali Android aplikacija), vrsto sistema in brskalnika (npr. Android, iPhone, Windows; Chrome, Safari), izbrani letnik, različico aplikacije, ali je vključen osebni urnik (da/ne) in pri Android aplikaciji število pripomočkov.</p><p>Strežnik ključa ne shrani v izvirni obliki, temveč le njegov zgoščen odtis, in ga ne povezuje z IP-naslovom, vpisno številko ali katerim koli drugim podatkom o tebi. Iz teh podatkov nastanejo le skupni števci (npr. uporabniki na dan, ura odprtja, delež Android/iPhone), ki jih vidi samo upravitelj. Podatki se ne pošiljajo tretjim osebam, dnevni zapisi se izbrišejo po 180 dneh, zapis o napravi pa po letu dni neuporabe. Ključ izbrišeš skupaj s podatki brskalnika ali aplikacije.</p></section>
     <section><h2>Osebni urnik</h2><p>Ko vključiš osebni urnik, aplikacija pošlje vpisno številko samo uradnemu strežniku urnikov FRI, da izbere tvojo skupino vaj. IŠRM je ne prodaja, ne uporablja za profiliranje in je ne zapisuje v svoj urnik-cache.</p></section>
     <section><h2>Strežnik in koledar</h2><p>Strežnik začasno hrani javne podatke urnika, da je prikaz hiter. Naročniška povezava .ics lahko vsebuje vpisno številko v naslovu, zato jo deli samo z aplikacijami, ki jim zaupaš.</p></section>
-    <section><h2>Android aplikacija in pripomočki</h2><p>Android aplikacija ne zahteva dostopa do lokacije, stikov, kamer, datotek ali obvestil. Uporablja le omrežje, običajna Androidova dovoljenja za načrtovano osveževanje pripomočka in, ko ga sam potrdiš, dovoljenje za nameščanje lastnih posodobitev, ki se prenesejo izključno s tega strežnika. Za pripomoček shrani samo njegov način prikaza, izbrani letnik in neobvezno vpisno številko v lokalno shrambo aplikacije. Urnik se prenaša izključno prek šifrirane povezave HTTPS.</p></section>
+    <section><h2>Android aplikacija in pripomočki</h2><p>Android aplikacija ne zahteva dostopa do lokacije, stikov, kamer, datotek ali obvestil. Uporablja le omrežje (tudi za anonimno statistiko, opisano zgoraj), običajna Androidova dovoljenja za načrtovano osveževanje pripomočka in, ko ga sam potrdiš, dovoljenje za nameščanje lastnih posodobitev, ki se prenesejo izključno s tega strežnika. Za pripomoček shrani samo njegov način prikaza, izbrani letnik in neobvezno vpisno številko v lokalno shrambo aplikacije. Urnik se prenaša izključno prek šifrirane povezave HTTPS.</p></section>
     <section><h2>Operativna obvestila</h2><p>Če upravitelj vključi ntfy, se tja pošiljajo le tehnična obvestila o zagonu, ustavitvi in dosegljivosti virov—ne osebne vpisne številke.</p></section>
-    <p className="privacy-updated">Zadnja posodobitev: 2. oktober 2026.</p>
+    <p className="privacy-updated">Zadnja posodobitev: 6. oktober 2026.</p>
   </main>;
 }
 
@@ -315,6 +318,7 @@ function AndroidReleasePage() {
 function App() {
   if (window.location.pathname === '/privacy') return <PrivacyPolicy />;
   if (window.location.pathname === '/android') return <AndroidReleasePage />;
+  if (window.location.pathname === '/admin') return <AdminPanel />;
   const [weekStart, setWeekStart] = useState(weekFromLocation);
   const [data, setData] = useState(null);
   const [monthEvents, setMonthEvents] = useState([]);
@@ -597,7 +601,11 @@ function App() {
   useEffect(() => { window.localStorage.setItem('timetable-view', viewMode); }, [viewMode]);
   useEffect(() => {
     console.info(`[IŠRM] App version ${APP_VERSION}`);
-    if (updateNotice) window.sessionStorage.removeItem('isrm-pwa-updated');
+    if (!updateNotice) return undefined;
+    window.sessionStorage.removeItem('isrm-pwa-updated');
+    // A short confirmation only; it hides itself so the install/download button underneath stays reachable.
+    const timer = window.setTimeout(() => setUpdateNotice(false), 5000);
+    return () => window.clearTimeout(timer);
   }, [updateNotice]);
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -608,6 +616,12 @@ function App() {
     return () => media.removeEventListener('change', apply);
   }, [theme]);
   useEffect(() => { window.localStorage.setItem('timetable-programme-year', programmeYear); }, [programmeYear]);
+  useEffect(() => {
+    const ping = () => { if (document.visibilityState === 'visible') pingSession({ programme: programmeYear, personal: Boolean(studentNumber) }); };
+    ping();
+    document.addEventListener('visibilitychange', ping);
+    return () => document.removeEventListener('visibilitychange', ping);
+  }, [programmeYear, studentNumber]);
   useEffect(() => {
     const listen = (event) => { event.preventDefault(); setInstallPrompt(event); };
     window.addEventListener('beforeinstallprompt', listen);
@@ -796,7 +810,7 @@ function App() {
 
   const pullOffset = Math.min(72, pullDistance) - 82;
   return <main className="app-shell skin">
-    {updateNotice && <aside className="update-sheet" role="status" aria-live="polite"><div><b>The app has been updated to {APP_VERSION}.</b></div><button onClick={() => setUpdateNotice(false)} aria-label="Close update notice"><Icon name="close" size={17} /></button></aside>}
+    {updateNotice && <aside className="update-sheet" role="status" aria-live="polite"><div><b>IŠRM je posodobljen na {APP_VERSION}.</b></div><button onClick={() => setUpdateNotice(false)} aria-label="Zapri obvestilo o posodobitvi"><Icon name="close" size={17} /></button></aside>}
     {(pullDistance > 0 || pullRefreshing) && <div className={`pull-refresh ${pullRefreshing ? 'is-refreshing' : ''} ${pullDistance >= 62 ? 'is-ready' : ''}`} style={{ transform: `translate(-50%, ${pullOffset}px)` }} role="status" aria-live="polite"><span className="pull-refresh__icon"><Icon name="refresh" size={16} /></span><span>{pullRefreshing ? 'Osvežujem urnik' : pullDistance >= 62 ? 'Spusti za osvežitev' : 'Povleci za osvežitev'}</span></div>}
     <header className="app-header">
       <div><small className={canEdit ? 'is-editing' : ''}>IŠRM · {programmeYear}. letnik{studentNumber ? ' · osebni' : ''}{canEdit ? ' · urejanje' : ''}</small><h1>Urnik</h1></div>

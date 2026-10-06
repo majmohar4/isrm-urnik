@@ -170,6 +170,19 @@ class TimetableRepository(private val context: Context) {
         return JSONObject(text)
     }
 
+    /** Anonymous session ping for the usage statistics described at /privacy. Failures are ignored. */
+    fun ping(body: JSONObject) {
+        runCatching {
+            val connection = (URL("$base/api/ping").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"; doOutput = true; connectTimeout = 8000; readTimeout = 8000
+                setRequestProperty("content-type", "application/json")
+            }
+            connection.outputStream.use { it.write(body.toString().toByteArray()) }
+            connection.responseCode
+            connection.disconnect()
+        }
+    }
+
     private fun get(path: String) = read((URL(base + path).openConnection() as HttpURLConnection).apply { connectTimeout = 8000; readTimeout = 8000 })
 
     // HttpURLConnection throws from inputStream on 4xx/5xx, but the server puts its message (and stale events) in that body.
