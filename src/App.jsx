@@ -271,7 +271,7 @@ function PrivacyPolicy() {
     <h1>Politika zasebnosti</h1>
     <p className="privacy-lead">IŠRM je namenjen prikazu urnika. Ne uporablja računov, oglasov ali zunanjih sledilnikov. Za štetje uporabe vodi le lastno, anonimno statistiko, opisano spodaj.</p>
     <section><h2>Podatki v tej napravi</h2><p>Izbrani letnik, videz, zadnji pogled in po želji vpisna številka se shranijo samo v lokalno shrambo tvoje naprave. Vpisno številko lahko kadarkoli odstraniš v nastavitvah. Če odkleneš urejanje dogodkov, se v napravi hrani le preklicljiv administratorski ključ, ne geslo.</p></section>
-    <section><h2>Anonimna statistika uporabe</h2><p>Da vemo, koliko ljudi urnik dejansko uporablja, aplikacija ob odprtju (in ponovno po vsaj 30 minutah odsotnosti) pošlje strežniku IŠRM kratko sporočilo: naključen anonimni ključ, ki ga ustvari sama ob prvem zagonu, način uporabe (brskalnik, nameščena spletna aplikacija ali Android aplikacija), vrsto sistema in brskalnika (npr. Android, iPhone, Windows; Chrome, Safari), izbrani letnik, različico aplikacije, ali je vključen osebni urnik (da/ne) in pri Android aplikaciji število pripomočkov.</p><p>Strežnik ključa ne shrani v izvirni obliki, temveč le njegov zgoščen odtis, in ga ne povezuje z IP-naslovom, vpisno številko ali katerim koli drugim podatkom o tebi. Iz teh podatkov nastanejo le skupni števci (npr. uporabniki na dan, ura odprtja, delež Android/iPhone), ki jih vidi samo upravitelj. Podatki se ne pošiljajo tretjim osebam, dnevni zapisi se izbrišejo po 180 dneh, zapis o napravi pa po letu dni neuporabe. Ključ izbrišeš skupaj s podatki brskalnika ali aplikacije.</p></section>
+    <section><h2>Anonimna statistika uporabe</h2><p>Da vemo, koliko ljudi urnik dejansko uporablja, aplikacija ob odprtju (in ob vsaki vrnitvi v aplikacijo) pošlje strežniku IŠRM kratko sporočilo: naključen anonimni ključ, ki ga ustvari sama ob prvem zagonu, način uporabe (brskalnik, nameščena spletna aplikacija ali Android aplikacija), vrsto sistema in brskalnika (npr. Android, iPhone, Windows; Chrome, Safari), izbrani letnik, različico aplikacije, ali je vključen osebni urnik (da/ne) in pri Android aplikaciji število pripomočkov.</p><p>Strežnik ključa ne shrani v izvirni obliki, temveč le njegov zgoščen odtis, in ga ne povezuje z IP-naslovom, vpisno številko ali katerim koli drugim podatkom o tebi. Iz teh podatkov nastanejo le skupni števci (npr. uporabniki na dan, ura odprtja, delež Android/iPhone), ki jih vidi samo upravitelj. Podatki se ne pošiljajo tretjim osebam, dnevni zapisi se izbrišejo po 180 dneh, zapis o napravi pa po letu dni neuporabe. Ključ izbrišeš skupaj s podatki brskalnika ali aplikacije.</p><p>Poleg tega strežnik šteje zahtevke za urnik: za vsak dan izračuna zgoščen odtis IP-naslova in vrste brskalnika s ključem, ki se vsak dan zamenja in se ne shrani. Tako je mogoče prešteti obiskovalce enega dne, ne pa jih slediti čez dneve ali ugotoviti njihovega naslova. IP-naslovi se ne shranjujejo.</p></section>
     <section><h2>Osebni urnik</h2><p>Ko vključiš osebni urnik, aplikacija pošlje vpisno številko samo uradnemu strežniku urnikov FRI, da izbere tvojo skupino vaj. IŠRM je ne prodaja, ne uporablja za profiliranje in je ne zapisuje v svoj urnik-cache.</p></section>
     <section><h2>Strežnik in koledar</h2><p>Strežnik začasno hrani javne podatke urnika, da je prikaz hiter. Naročniška povezava .ics lahko vsebuje vpisno številko v naslovu, zato jo deli samo z aplikacijami, ki jim zaupaš.</p></section>
     <section><h2>Android aplikacija in pripomočki</h2><p>Android aplikacija ne zahteva dostopa do lokacije, stikov, kamer, datotek ali obvestil. Uporablja le omrežje (tudi za anonimno statistiko, opisano zgoraj), običajna Androidova dovoljenja za načrtovano osveževanje pripomočka in, ko ga sam potrdiš, dovoljenje za nameščanje lastnih posodobitev, ki se prenesejo izključno s tega strežnika. Za pripomoček shrani samo njegov način prikaza, izbrani letnik in neobvezno vpisno številko v lokalno shrambo aplikacije. Urnik se prenaša izključno prek šifrirane povezave HTTPS.</p></section>
@@ -616,12 +616,15 @@ function App() {
     return () => media.removeEventListener('change', apply);
   }, [theme]);
   useEffect(() => { window.localStorage.setItem('timetable-programme-year', programmeYear); }, [programmeYear]);
+  const programmeRef = useRef({ programme: programmeYear, personal: Boolean(studentNumber) });
+  programmeRef.current = { programme: programmeYear, personal: Boolean(studentNumber) };
   useEffect(() => {
-    const ping = () => { if (document.visibilityState === 'visible') pingSession({ programme: programmeYear, personal: Boolean(studentNumber) }); };
-    ping();
+    // Every open counts: once on load, then on each return to the tab/app. Changing the year does not re-count.
+    pingSession({ programme: programmeRef.current.programme, personal: programmeRef.current.personal });
+    const ping = () => { if (document.visibilityState === 'visible') pingSession(programmeRef.current); };
     document.addEventListener('visibilitychange', ping);
     return () => document.removeEventListener('visibilitychange', ping);
-  }, [programmeYear, studentNumber]);
+  }, []);
   useEffect(() => {
     const listen = (event) => { event.preventDefault(); setInstallPrompt(event); };
     window.addEventListener('beforeinstallprompt', listen);

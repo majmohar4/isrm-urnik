@@ -15,8 +15,15 @@ function storeToken(token) { try { if (token) window.localStorage.setItem(TOKEN_
 function originLabel(value) {
   const [platform, system] = value.split('|');
   if (platform === 'android-app') return 'Android aplikacija';
+  if (platform === 'calendar') return 'Koledar (naročnina .ics)';
+  if (platform === 'browser') return `Splet · ${{ android: 'Android', ios: 'iPhone', windows: 'Windows', macos: 'Mac', linux: 'Linux' }[system] || 'drugo'}`;
   const device = { android: 'Android', ios: 'iPhone', windows: 'Windows', macos: 'Mac', linux: 'Linux' }[system] || 'drugo';
   return `${platform === 'pwa' ? 'PWA' : 'Brskalnik'} · ${device}`;
+}
+
+function openWord(count) {
+  const tail = count % 100;
+  return tail === 1 ? 'odprtje' : tail === 2 ? 'odprtji' : tail === 3 || tail === 4 ? 'odprtja' : 'odprtij';
 }
 
 function shortDate(date) { return new Intl.DateTimeFormat('sl-SI', { day: 'numeric', month: 'numeric' }).format(new Date(`${date}T12:00:00`)); }
@@ -74,30 +81,26 @@ function niceMax(value) {
   return Math.ceil(value / magnitude * 2) / 2 * magnitude;
 }
 
-function DailyChart({ series }) {
+// Stacked daily bars (segments, top to bottom) with a dashed line, for the last 30 days.
+function DailyChart({ series, kicker, title, segments, line, readout }) {
   const [active, setActive] = useState(series.length - 1);
-  const max = niceMax(Math.max(1, ...series.map((day) => Math.max(day.users, day.opens))));
-  const points = series.map((day, index) => `${(index + 0.5) / series.length * 100},${100 - day.opens / max * 100}`).join(' ');
+  const max = niceMax(Math.max(1, ...series.map((day) => Math.max(segments.reduce((sum, segment) => sum + day[segment.key], 0), day[line.key]))));
+  const points = series.map((day, index) => `${(index + 0.5) / series.length * 100},${100 - day[line.key] / max * 100}`).join(' ');
   const day = series[active] || series.at(-1);
   return <section className="adm-card adm-card--wide">
     <header className="adm-card__head">
-      <div><p className="adm-kicker">Zadnjih 30 dni</p><h2>Dnevni uporabniki in odprtja</h2></div>
-      <ul className="adm-legend"><li><i className="sw sw--returning" />Vračajoči</li><li><i className="sw sw--new" />Novi</li><li><i className="sw sw--line" />Odprtja</li></ul>
+      <div><p className="adm-kicker">{kicker}</p><h2>{title}</h2></div>
+      <ul className="adm-legend">{[...segments].reverse().map((segment) => <li key={segment.key}><i className={`sw ${segment.className}`} />{segment.label}</li>)}<li><i className="sw sw--line" />{line.label}</li></ul>
     </header>
     <div className="adm-chart__readout" aria-live="polite">
       <b>{longDate(day.date)}</b>
-      <span><strong>{day.users}</strong> uporabnikov</span>
-      <span><strong>{day.new}</strong> novih</span>
-      <span><strong>{day.opens}</strong> odprtij</span>
+      {readout(day).map(([value, label]) => <span key={label}><strong>{number.format(value)}</strong> {label}</span>)}
     </div>
     <div className="adm-chart">
       <div className="adm-chart__grid">{[1, 0.5, 0].map((step) => <span key={step} style={{ bottom: `${step * 100}%` }}>{number.format(Math.round(max * step))}</span>)}</div>
       <div className="adm-chart__bars" onMouseLeave={() => setActive(series.length - 1)}>
-        {series.map((entry, index) => <button key={entry.date} className={index === active ? 'is-active' : ''} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)} onClick={() => setActive(index)} aria-label={`${longDate(entry.date)}: ${entry.users} uporabnikov, ${entry.opens} odprtij`}>
-          <span className="bar">
-            <span className="bar__new" style={{ height: `${entry.new / max * 100}%` }} />
-            <span className="bar__returning" style={{ height: `${entry.returning / max * 100}%` }} />
-          </span>
+        {series.map((entry, index) => <button key={entry.date} className={index === active ? 'is-active' : ''} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)} onClick={() => setActive(index)} aria-label={`${longDate(entry.date)}: ${readout(entry).map(([value, label]) => `${value} ${label}`).join(', ')}`}>
+          <span className="bar">{segments.map((segment) => <span key={segment.key} className={segment.className.replace('sw--', 'bar__')} style={{ height: `${entry[segment.key] / max * 100}%` }} />)}</span>
         </button>)}
         <svg className="adm-chart__line" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points={points} vectorEffect="non-scaling-stroke" /></svg>
       </div>
@@ -129,18 +132,18 @@ function SplitBar({ title, items, labels }) {
   </div>;
 }
 
-function Heatmap({ heat }) {
+function Heatmap({ heat, subtitle }) {
   const max = Math.max(1, ...heat.flat());
   const peak = heat.flatMap((hours, day) => hours.map((count, hour) => ({ count, day, hour }))).sort((a, b) => b.count - a.count)[0];
   return <section className="adm-card adm-card--wide">
     <header className="adm-card__head">
-      <div><p className="adm-kicker">Zadnji 4 tedni</p><h2>Kdaj odpirajo urnik</h2></div>
+      <div><p className="adm-kicker">Zadnji 4 tedni · {subtitle}</p><h2>Kdaj odpirajo urnik</h2></div>
       {peak?.count > 0 && <p className="adm-muted">Največ ob <b>{WEEKDAYS[peak.day].toLowerCase()} {peak.hour}:00</b></p>}
     </header>
     <div className="adm-heat" role="table" aria-label="Odprtja po dnevu in uri">
       {heat.map((hours, day) => <div className="adm-heat__row" role="row" key={day}>
         <span role="rowheader">{WEEKDAYS[day]}</span>
-        {hours.map((count, hour) => <i key={hour} role="cell" title={`${WEEKDAYS[day]} ${hour}:00 · ${count} odprtij`} style={{ '--level': count ? 0.12 + count / max * 0.88 : 0 }} />)}
+        {hours.map((count, hour) => <i key={hour} role="cell" title={`${WEEKDAYS[day]} ${hour}:00 · ${count}`} style={{ '--level': count ? 0.12 + count / max * 0.88 : 0 }} />)}
       </div>)}
       <div className="adm-heat__row adm-heat__hours" aria-hidden="true"><span />{Array.from({ length: 24 }, (_, hour) => <small key={hour}>{hour % 3 === 0 ? hour : ''}</small>)}</div>
     </div>
@@ -201,7 +204,7 @@ function Dashboard({ token, onLogout }) {
     <header className="adm-top">
       <a href="/" className="adm-brand"><span className="adm-mark">IŠ</span><span>IŠRM<small>Nadzorna plošča</small></span></a>
       <div className="adm-top__right">
-        {stats && <span className="adm-live"><b />{stats.activeNow} aktivnih · 15 min</span>}
+        {stats && <span className="adm-live"><b />{stats.traffic.liveNow} zdaj odprto</span>}
         <button className="adm-ghost" onClick={load} disabled={loading} aria-label="Osveži"><svg viewBox="0 0 24 24" className={loading ? 'spin' : ''}><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg></button>
         <button className="adm-ghost adm-ghost--text" onClick={logout}>Odjava</button>
       </div>
@@ -213,24 +216,35 @@ function Dashboard({ token, onLogout }) {
     {stats && <>
       <section className="adm-hero">
         <div>
-          <p className="adm-kicker">{longDate(stats.today.date)}</p>
-          <h1><span>{number.format(stats.today.users)}</span> {stats.today.users === 1 ? 'uporabnik' : 'uporabnikov'} danes</h1>
-          <p className="adm-muted">{number.format(stats.today.opens)} odprtij · {stats.today.new} novih naprav · skupaj {number.format(stats.totalDevices)} naprav od {new Intl.DateTimeFormat('sl-SI', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(stats.since))}</p>
+          <p className="adm-kicker">{longDate(stats.traffic.today.date)}</p>
+          <h1><span>{number.format(stats.traffic.today.visits)}</span> {openWord(stats.traffic.today.visits)} danes</h1>
+          <p className="adm-muted"><b>{stats.traffic.liveNow}</b> ima urnik odprt prav zdaj · {number.format(stats.traffic.today.visitors)} različnih obiskovalcev · {number.format(stats.traffic.today.requests)} zahtevkov · povprečno {number.format(stats.traffic.weekVisitsAverage)} odprtij na dan</p>
         </div>
       </section>
 
       <section className="adm-kpis">
-        <Kpi accent label="Danes" value={number.format(stats.today.users)} delta={stats.today.users - (stats.yesterday?.users || 0)} hint=" vs. včeraj" />
-        <Kpi label="Tedensko aktivni" value={number.format(stats.wau)} hint="zadnjih 7 dni" />
-        <Kpi label="Mesečno aktivni" value={number.format(stats.mau)} hint="zadnjih 30 dni" />
-        <Kpi label="Povprečno na dan" value={number.format(stats.dauAverage)} hint="uporabnikov · 30 dni" />
-        <Kpi label="Odprtja / uporabnika" value={number.format(stats.opensPerUser)} hint="na aktiven dan" />
-        <Kpi label="Zvestoba" value={`${stats.stickiness} %`} hint="dnevni ÷ mesečni" />
-        <Kpi label="Tedenska retencija" value={stats.weeklyRetention == null ? '—' : `${stats.weeklyRetention} %`} hint="lanski teden → ta teden" />
-        <Kpi label="Osebni urnik" value={number.format(stats.personal)} hint={`${stats.widgets} s pripomočkom`} />
+        <Kpi accent label="Odprtja danes" value={number.format(stats.traffic.today.visits)} delta={stats.traffic.today.visits - (stats.traffic.yesterday?.visits || 0)} hint=" vs. včeraj" />
+        <Kpi label="Zdaj odprto" value={number.format(stats.traffic.liveNow)} hint="zadnja minuta" />
+        <Kpi label="Obiskovalci danes" value={number.format(stats.traffic.today.visitors)} delta={stats.traffic.today.visitors - (stats.traffic.yesterday?.visitors || 0)} hint=" vs. včeraj" />
+        <Kpi label="Odprtja na dan" value={number.format(stats.traffic.weekVisitsAverage)} hint={`${number.format(stats.traffic.weekAverage)} obiskovalcev · 7 dni`} />
+        <Kpi label="Naprave danes" value={number.format(stats.today.users)} delta={stats.today.users - (stats.yesterday?.users || 0)} hint=" anonimni ključ" />
+        <Kpi label="Tedensko aktivne" value={number.format(stats.wau)} hint="naprave · 7 dni" />
+        <Kpi label="Mesečno aktivne" value={number.format(stats.mau)} hint="naprave · 30 dni" />
+        <Kpi label="Tedenska retencija" value={stats.weeklyRetention == null ? '—' : `${stats.weeklyRetention} %`} hint={`zvestoba ${stats.stickiness} % · ${number.format(stats.totalDevices)} naprav`} />
       </section>
 
-      <DailyChart series={stats.series} />
+      <DailyChart series={stats.traffic.series} kicker="Vsa odprtja · 30 dni" title="Odprtja in obiskovalci"
+        segments={[{ key: 'visits', className: 'sw--returning', label: 'Odprtja' }]} line={{ key: 'visitors', label: 'Obiskovalci' }}
+        readout={(day) => [[day.visits, 'odprtij'], [day.visitors, 'obiskovalcev'], [day.requests, 'zahtevkov']]} />
+
+      <div className="adm-grid adm-grid--two">
+        <Breakdown kicker="Danes · obiskovalci" title="Od kod prihajajo danes" items={stats.traffic.todayOrigins} labels={originLabel} />
+        <Breakdown kicker="Povprečno na dan · 4 tedni" title="Izvor prometa" items={stats.traffic.origins} labels={originLabel} />
+      </div>
+
+      <DailyChart series={stats.series} kicker="Naprave z anonimnim ključem · 30 dni" title="Naprave in odprtja"
+        segments={[{ key: 'new', className: 'sw--new', label: 'Nove' }, { key: 'returning', className: 'sw--returning', label: 'Vračajoče' }]} line={{ key: 'opens', label: 'Odprtja' }}
+        readout={(day) => [[day.users, 'naprav'], [day.new, 'novih'], [day.opens, 'odprtij']]} />
 
       <section className="adm-card adm-card--wide adm-origins">
         <header className="adm-card__head"><div><p className="adm-kicker">Aktivne naprave · 30 dni</p><h2>Izvor dostopa</h2></div><span className="adm-muted">{platformTotal} naprav</span></header>
@@ -247,13 +261,13 @@ function Dashboard({ token, onLogout }) {
         <Breakdown kicker="Nameščene različice" title="Različice" items={stats.versions} />
       </div>
 
-      <Heatmap heat={stats.heat} />
+      <Heatmap heat={stats.traffic.heat.flat().some(Boolean) ? stats.traffic.heat : stats.heat} subtitle={stats.traffic.heat.flat().some(Boolean) ? 'obiski' : 'odprtja'} />
 
       <div className="adm-grid adm-grid--two">
         <SystemCard server={stats.server} />
         <section className="adm-card adm-note">
           <header className="adm-card__head"><div><p className="adm-kicker">Kako se šteje</p><h2>O podatkih</h2></div></header>
-          <p>Vsaka namestitev (brskalnik, PWA ali Android aplikacija) ustvari naključen anonimen ključ; strežnik hrani le njegov zgoščen odtis. Odprtje je seja — ponovno se šteje po 30 minutah odsotnosti. Naprave z administratorskim dostopom se ne štejejo.</p>
+          <p><b>Promet strežnika</b> šteje vsako odprtje spletne strani, PWA ali Android aplikacije (vseh različic) po zahtevkih: obiskovalec je kombinacija IP-naslova in brskalnika, zgoščena z dnevno menjajočim se ključem, zato se ga ne da slediti čez dneve. Šteje se vsako odprtje: nalaganje strani, vsak prihod nazaj v aplikacijo in (za starejše različice) prvo preverjanje sprememb po več kot 75 s tišine — odprta aplikacija namreč vsakih 20 s preveri spremembe, zato je tudi »zdaj odprto« točno. Osveževanje pripomočkov in koledarjev šteje k obiskovalcem, ne k odprtjem. Štejejo se tudi administratorji.</p><p><b>Naprave</b> štejejo anonimni ključ, ki ga ustvari aplikacija (od različice 3.1), in zato ločijo PWA od brskalnika ter nove od vračajočih se naprav. Tudi tu se šteje vsako odprtje.</p>
           <p>Ista oseba na telefonu in računalniku šteje kot dve napravi. Dnevni podatki se hranijo 180 dni.</p>
           <p className="adm-foot">Splet v{APP_VERSION} · posodobljeno {relativeTime(stats.generatedAt)}</p>
         </section>

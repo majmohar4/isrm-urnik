@@ -807,6 +807,11 @@ const server = createServer(async (request, response) => {
   const requestedWeek = url.searchParams.get('week');
   if (requestedWeek && !/^\d{4}-\d{2}-\d{2}$/.test(requestedWeek)) return sendJson(response, { error: 'Neveljaven teden.' }, 400);
   if (!enforceRateLimit(request, response, url.pathname)) return;
+  // Raw visitor counting for the admin panel: app/API calls and page loads, never static files or admin requests.
+  if (request.method === 'GET' || url.pathname === '/api/ping') {
+    const tracked = url.pathname === '/' || url.pathname === '/index.html' || (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/admin/')) || !extname(url.pathname);
+    if (tracked && !['/live', '/health', '/admin'].includes(url.pathname)) analytics.track({ ip: clientKey(request), agent: request.headers['user-agent'], path: url.pathname });
+  }
   if (url.pathname.startsWith('/api/admin/')) {
     if (request.method !== 'POST') return sendJson(response, { error: 'Metoda ni podprta.' }, 405);
     if (url.pathname === '/api/admin/login') {

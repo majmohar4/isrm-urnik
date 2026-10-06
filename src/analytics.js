@@ -1,10 +1,8 @@
 import { APP_VERSION } from './version.js';
 
 // Anonymous session count (see /privacy): a random install id, the kind of app and device, the chosen year.
-// A new session is counted on open and after 30 minutes away; admin devices are not counted.
+// Sent on every open and every return to the app; the server merges duplicates a few seconds apart.
 const ID_KEY = 'isrm-install-id';
-const LAST_PING_KEY = 'isrm-last-ping';
-const SESSION_GAP_MS = 30 * 60_000;
 
 function installId() {
   let id = window.localStorage.getItem(ID_KEY);
@@ -28,10 +26,6 @@ function deviceSystem() {
 
 export function pingSession({ programme, personal }) {
   try {
-    if (window.localStorage.getItem('isrm-admin-token') || window.localStorage.getItem('isrm-stats-token')) return;
-    const last = Number(window.localStorage.getItem(LAST_PING_KEY) || 0);
-    if (Date.now() - last < SESSION_GAP_MS) return;
-    window.localStorage.setItem(LAST_PING_KEY, String(Date.now()));
     const standalone = window.matchMedia('(display-mode: standalone)').matches || Boolean(navigator.standalone);
     const body = JSON.stringify({
       id: installId(),

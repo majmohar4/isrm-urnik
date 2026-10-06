@@ -103,6 +103,7 @@ body:has(.adm) { background: #0d1411; }
 .bar > span { display: block; width: 100%; transform-origin: bottom; animation: adm-grow .7s cubic-bezier(.2, .8, .2, 1) both; }
 .bar__new { border-radius: 4px 4px 0 0; background: var(--accent); }
 .bar__returning { background: linear-gradient(180deg, var(--sage), var(--sage-soft)); border-radius: 0 0 2px 2px; }
+.bar__returning:first-child { border-radius: 4px 4px 2px 2px; }
 .bar__new + .bar__returning { border-top: 1px solid var(--surface); }
 .bar__new[style*="height: 0%"] + .bar__returning { border-radius: 4px 4px 2px 2px; border-top: 0; }
 .adm-chart__bars > button:not(.is-active) .bar { opacity: .78; }

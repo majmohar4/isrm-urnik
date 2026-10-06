@@ -44,6 +44,23 @@ function browserFromAgent(agent) {
   return 'other';
 }
 
+const BOT_AGENT = /bot|crawl|spider|slurp|preview|monitor|uptime|curl|wget|python|go-http|node|axios|headless|lighthouse|facebookexternalhit|scan/i;
+// An open app (web, PWA or Android) asks /api/revision every 20 s while it is in the foreground. A foreground request
+// after REOPEN_GAP_MS of silence therefore means the app was closed or backgrounded and opened again. Page loads and
+// the app's own open ping always count, merged within OPEN_DEDUPE_MS so one open never counts twice.
+const REOPEN_GAP_MS = 75_000;
+const OPEN_DEDUPE_MS = 10_000;
+const LIVE_WINDOW_MS = 60_000;
+const MAX_DAILY_VISITORS = 10_000;
+
+// Server-side origin of a request: the Android app (Java HTTP client), a calendar app polling the .ics subscription,
+// or a browser (website or PWA) on a given system.
+function originOf(agent, path) {
+  if (path.startsWith('/api/calendar/subscription')) return 'calendar';
+  if (/Dalvik|okhttp/i.test(agent)) return 'android-app';
+  return `browser|${systemFromAgent(agent)}`;
+}
+
 const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback);
 
 export function createAnalytics({ file, programmes }) {
@@ -57,6 +74,12 @@ export function createAnalytics({ file, programmes }) {
     } catch { /* first start or unreadable: begin empty */ }
     return { salt: randomBytes(32).toString('hex'), since: new Date().toISOString(), devices: {}, days: {} };
   }
+  state.traffic ||= {};
+  state.trafficSince ||= new Date().toISOString();
+  // Request visitors are keyed by a hash of IP + browser with a salt that changes every day and is never stored, so a
+  // visitor can be counted within one day but never followed across days or traced back to an address.
+  let trafficSalt = { day: '', value: '' };
+  const lastSeen = new Map();
 
   function flush() {
     if (!dirty) return;
@@ -72,6 +95,7 @@ export function createAnalytics({ file, programmes }) {
     for (const day of Object.keys(state.days)) if (day < oldestDay) delete state.days[day];
     const oldestDevice = daysAgo(DEVICE_RETENTION_DAYS);
     for (const [hash, device] of Object.entries(state.devices)) if (device.last < oldestDevice) delete state.devices[hash];
+    for (const day of Object.keys(state.traffic)) if (day < oldestDay) delete state.traffic[day];
   }
 
   // One call per app session (the clients ping on open and after 30 minutes in the background).
@@ -108,6 +132,76 @@ export function createAnalytics({ file, programmes }) {
     if (!state.prunedOn || state.prunedOn !== today) { state.prunedOn = today; prune(); }
     dirty = true;
     return true;
+  }
+
+  // Every app/website request (not static files or admin calls). Works for every app version, no client changes needed.
+  function track({ ip, agent = '', path }) {
+    agent = String(agent).slice(0, 400);
+    if (!agent || BOT_AGENT.test(agent)) return;
+    const now = new Date();
+    const today = localDate(now);
+    if (trafficSalt.day !== today) { trafficSalt = { day: today, value: randomBytes(32).toString('hex') }; lastSeen.clear(); }
+    const key = createHash('sha256').update(`${trafficSalt.value}:${ip}:${agent}`).digest('hex').slice(0, 16);
+    const day = state.traffic[today] ||= { requests: 0, visits: 0, hours: Array(24).fill(0), visitors: {} };
+    day.requests += 1;
+    let visitor = day.visitors[key];
+    if (!visitor) {
+      if (Object.keys(day.visitors).length >= MAX_DAILY_VISITORS) return;
+      visitor = day.visitors[key] = { o: originOf(agent, path), v: 0 };
+    }
+    const explicitOpen = path === '/api/ping' || path === '/' || path === '/index.html' || !path.startsWith('/api/');
+    const foreground = explicitOpen || path === '/api/revision';
+    if (foreground) {
+      const at = now.getTime();
+      const seen = lastSeen.get(key) || { foreground: 0, open: 0 };
+      const opened = explicitOpen ? at - seen.open >= OPEN_DEDUPE_MS && at - seen.foreground >= OPEN_DEDUPE_MS : at - seen.foreground >= REOPEN_GAP_MS;
+      if (opened) { visitor.v += 1; day.visits += 1; day.hours[now.getHours()] += 1; seen.open = at; }
+      seen.foreground = at;
+      lastSeen.set(key, seen);
+    }
+    if (!state.prunedOn || state.prunedOn !== today) { state.prunedOn = today; prune(); }
+    dirty = true;
+  }
+
+  function trafficStats(now) {
+    const series = Array.from({ length: 30 }, (_, index) => {
+      const date = daysAgo(29 - index, now);
+      const day = state.traffic[date];
+      return { date, visitors: day ? Object.keys(day.visitors).length : 0, visits: day?.visits || 0, requests: day?.requests || 0 };
+    });
+    const heat = Array.from({ length: 7 }, () => Array(24).fill(0));
+    const originDays = {};
+    let activeDays = 0;
+    for (let index = 0; index < 28; index += 1) {
+      const date = daysAgo(index, now);
+      const day = state.traffic[date];
+      if (!day) continue;
+      activeDays += 1;
+      const weekday = (new Date(`${date}T12:00:00`).getDay() + 6) % 7;
+      day.hours.forEach((count, hour) => { heat[weekday][hour] += count; });
+      for (const visitor of Object.values(day.visitors)) originDays[visitor.o] = (originDays[visitor.o] || 0) + 1;
+    }
+    // Average visitors per day by origin, over the days that have data (at most four weeks).
+    const origins = Object.entries(originDays).map(([label, count]) => ({ label, count: Math.round(count / Math.max(1, activeDays) * 10) / 10 })).sort((a, b) => b.count - a.count);
+    const today = state.traffic[localDate(now)];
+    const todayOrigins = Object.entries(Object.values(today?.visitors || {}).reduce((counts, visitor) => { counts[visitor.o] = (counts[visitor.o] || 0) + 1; return counts; }, {})).map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+    const cutoff = now.getTime() - LIVE_WINDOW_MS;
+    let liveNow = 0;
+    for (const seen of lastSeen.values()) if (seen.foreground >= cutoff) liveNow += 1;
+    const week = series.slice(-7);
+    return {
+      since: state.trafficSince,
+      today: series.at(-1),
+      yesterday: series.at(-2),
+      liveNow,
+      // Averaged over the days that already have data, so a fresh install does not read as a slow week.
+      weekVisitsAverage: Math.round(week.reduce((sum, day) => sum + day.visits, 0) / Math.max(1, week.filter((day) => state.traffic[day.date]).length) * 10) / 10,
+      weekAverage: Math.round(week.reduce((sum, day) => sum + day.visitors, 0) / Math.max(1, week.filter((day) => state.traffic[day.date]).length) * 10) / 10,
+      series,
+      heat,
+      origins,
+      todayOrigins,
+    };
   }
 
   function stats() {
@@ -156,6 +250,7 @@ export function createAnalytics({ file, programmes }) {
     const todayEntry = series.at(-1);
     const yesterdayEntry = series.at(-2);
     return {
+      traffic: trafficStats(now),
       generatedAt: now.toISOString(),
       since: state.since,
       today: { ...todayEntry, date: today },
@@ -183,5 +278,5 @@ export function createAnalytics({ file, programmes }) {
 
   const timer = setInterval(flush, FLUSH_MS);
   timer.unref();
-  return { record, stats, flush };
+  return { record, track, stats, flush };
 }
